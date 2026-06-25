@@ -1,0 +1,2095 @@
+import os
+import sys
+import sqlite3
+import json
+import requests
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+from mootdx.quotes import Quotes
+import akshare as ak
+
+# Base Paths
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DB_DIR = os.path.join(BASE_DIR, "data")
+DB_PATH = os.path.join(DB_DIR, "recap.db")
+JS_PATH = os.path.join(DB_DIR, "recap_history.js")
+HTML_PATH = os.path.join(BASE_DIR, "index.html")
+
+# Create directories if not exist
+os.makedirs(DB_DIR, exist_ok=True)
+
+# THS HTTP headers
+THS_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+}
+
+def init_db():
+    """Initialize SQLite database tables"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # 1. Market Recap Table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS market_recap (
+            date TEXT PRIMARY KEY,
+            sh_price REAL,
+            sh_change REAL,
+            sz_price REAL,
+            sz_change REAL,
+            cy_price REAL,
+            cy_change REAL,
+            total_turnover REAL,
+            limit_ups INTEGER,
+            limit_downs INTEGER,
+            promotion_rate REAL,
+            hgt_flow REAL,
+            sgt_flow REAL,
+            sentiment TEXT,
+            sector_ranking TEXT
+        )
+    """)
+    
+    # 2. Candidates Table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS candidates (
+            date TEXT,
+            code TEXT,
+            name TEXT,
+            price REAL,
+            change_pct REAL,
+            turnover REAL,
+            float_mcap REAL,
+            seal_funds REAL,
+            seal_ratio REAL,
+            first_seal_time TEXT,
+            blown_count INTEGER,
+            consecutive_boards INTEGER,
+            sector TEXT,
+            concept TEXT,
+            score INTEGER,
+            playbook TEXT,
+            pred_prob REAL,
+            PRIMARY KEY (date, code)
+        )
+    """)
+    
+    # Check if pred_prob exists in candidates table
+    cursor.execute("PRAGMA table_info(candidates)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if "pred_prob" not in columns:
+        cursor.execute("ALTER TABLE candidates ADD COLUMN pred_prob REAL")
+    
+    # 3. Limit-Ups Archive Table (V2.1 for Backtest Calibration)
+    cursor.execute("CREATE TABLE IF NOT EXISTS limit_ups_archive (date TEXT, code TEXT, name TEXT, consecutive_boards INTEGER, PRIMARY KEY (date, code))")
+    
+    conn.commit()
+    conn.close()
+def get_trading_days(offset=60):
+    """Fetch trading days from mootdx index K-lines"""
+    try:
+        client = Quotes.factory(market='std')
+        # 000001 is Shanghai Composite Index in client.index
+        bars = client.index(symbol='000001', category=4, offset=offset)
+        bars = bars.copy()
+        dates = pd.to_datetime(bars.index).strftime('%Y-%m-%d').tolist()
+        return sorted(list(set(dates)))
+    except Exception as e:
+        print(f"Error fetching trading days: {e}")
+        # Fallback to last 30 weekdays if mootdx fails
+        today = datetime.now()
+        dates = []
+        for i in range(offset * 2):
+            d = today - timedelta(days=i)
+            if d.weekday() < 5:
+                dates.append(d.strftime('%Y-%m-%d'))
+        return sorted(dates)
+
+def get_previous_trading_day(date_str, trade_dates):
+    """Find the trading day immediately before date_str in the trade_dates list"""
+    if date_str in trade_dates:
+        idx = trade_dates.index(date_str)
+        if idx > 0:
+            return trade_dates[idx - 1]
+    # If date_str is not in list, find the largest date in list that is smaller than date_str
+    smaller_dates = [d for d in trade_dates if d < date_str]
+    if smaller_dates:
+        return max(smaller_dates)
+    return None
+
+def get_index_recap(date_str):
+    """Retrieve close prices and daily change % of A-share major indices and total turnover"""
+    client = Quotes.factory(market='std')
+    indices = {"sh": "000001", "sz": "399001", "cy": "399006"}
+    recap = {}
+    
+    sh_amount = 0.0
+    sz_amount = 0.0
+    
+    for name, sym in indices.items():
+        try:
+            # Fetch 15 bars to find the target date and its predecessor
+            bars = client.index(symbol=sym, category=4, offset=15)
+            bars = bars.copy()
+            bars['date_str'] = pd.to_datetime(bars.index).strftime('%Y-%m-%d')
+            
+            matching_rows = bars[bars['date_str'] == date_str]
+            if not matching_rows.empty:
+                idx = matching_rows.index[0]
+                pos = bars.index.get_loc(idx)
+                
+                today_close = float(bars.iloc[pos]["close"])
+                today_amount = float(bars.iloc[pos]["amount"])
+                
+                if name == "sh":
+                    sh_amount = today_amount
+                elif name == "sz":
+                    sz_amount = today_amount
+                    
+                if pos > 0:
+                    prev_close = float(bars.iloc[pos - 1]["close"])
+                    change_pct = (today_close - prev_close) / prev_close * 100
+                else:
+                    today_open = float(bars.iloc[pos]["open"])
+                    change_pct = (today_close - today_open) / today_open * 100
+                    
+                recap[name] = {
+                    "price": round(today_close, 2),
+                    "change": round(change_pct, 2)
+                }
+            else:
+                recap[name] = {"price": 0.0, "change": 0.0}
+        except Exception as e:
+            print(f"Error getting index {name} for {date_str}: {e}")
+            recap[name] = {"price": 0.0, "change": 0.0}
+            
+    # Calculate total turnover in Billion RMB
+    total_turnover = (sh_amount + sz_amount) / 1e9
+    recap["total_turnover"] = round(total_turnover, 2) if total_turnover > 0 else 0.0
+    
+    return recap
+
+def fetch_ths_reasons(date_str):
+    """Fetch limit-up reason tags from TongHuShun"""
+    url = f"http://zx.10jqka.com.cn/event/api/getharden/date/{date_str}/orderby/date/orderway/desc/charset/GBK/"
+    try:
+        r = requests.get(url, headers=THS_HEADERS, timeout=10)
+        data = r.json()
+        if data.get("errocode") == 0 or data.get("errocode") == "0":
+            rows = data.get("data") or []
+            # Return dict: {code: reason}
+            reasons = {}
+            for row in rows:
+                code = str(row.get("code", "")).zfill(6)
+                reasons[code] = row.get("reason", "")
+            return reasons
+    except Exception as e:
+        print(f"Error fetching THS reasons: {e}")
+    return {}
+
+def fetch_northbound_flow():
+    """Fetch today's realtime northbound minute-by-minute flow and return close aggregates"""
+    url = "https://data.hexin.cn/market/hsgtApi/method/dayChart/"
+    try:
+        r = requests.get(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Host": "data.hexin.cn",
+            "Referer": "https://data.hexin.cn/"
+        }, timeout=10)
+        d = r.json()
+        hgt = d.get("hgt", [])
+        sgt = d.get("sgt", [])
+        hgt_close = hgt[-1] if hgt else 0.0
+        sgt_close = sgt[-1] if sgt else 0.0
+        return float(hgt_close), float(sgt_close)
+    except Exception as e:
+        print(f"Error fetching northbound flow: {e}")
+    return 0.0, 0.0
+
+def generate_playbook(row, sector_count, is_one_word):
+    """Generate detailed momentum trading playbooks based on stock metrics"""
+    name = row["名称"]
+    sector = row["所属行业"]
+    time_str = str(row["首次封板时间"]).zfill(6)
+    time_formatted = f"{time_str[:2]}:{time_str[2:4]}:{time_str[4:]}"
+    blown = int(row["炸板次数"])
+    turnover = float(row["换手率"])
+    score = int(row["接力指数"])
+    
+    if is_one_word:
+        return (
+            f"【一字极速板】今日全天一字锁死，筹码高度锁定。明日接力策略：不要在竞价或开盘直接挂单排队以防‘炸板闷杀’。"
+            f"可关注明日开盘后的‘分歧洗盘再封板’机会。若明日竞价放量且高开在5%-8%之间，可等换手承接充分、下探均线重新走强时介入。"
+        )
+    elif score >= 115:
+        return (
+            f"【核心领涨黄金标的】今日于 {time_formatted} 极速封板，炸板 {blown} 次，属于多头资金绝对主导的超强首板。所属【{sector}】"
+            f"板块今日大面积爆发（共 {sector_count} 只涨停），板块效应极佳。明日接力策略：明日大概率高开（>4%）。若早盘竞价成交量"
+            f"达到今日首板成交额的10%以上，且开盘5分钟内快速放量拉升，可果断半路跟进；或在换手率达到5%左右、股价再度封死二板瞬间打板买入。"
+        )
+    elif score >= 95:
+        return (
+            f"【强势突围潜力股】首次封板时间 {time_formatted} 处于早盘黄金期，炸板仅 {blown} 次，换手率 {turnover}% 适中，筹码换手健康。"
+            f"明日接力策略：明日竞价若小幅高开（2%-4%）且放量，说明有资金继续做接力。建议开盘后等冲高回调至均线守住、再度向上翻红放量时介入；"
+            f"或者等日内充分换手（>10%）后，尾盘重新冲击极限封板时确认打板。"
+        )
+    elif blown >= 2 or time_str >= "140000":
+        return (
+            f"【分歧烂板/尾盘偷袭】今日封板极晚（{time_formatted}）且炸板 {blown} 次，资金分歧剧烈，换手率偏高，筹码结构不稳。"
+            f"明日接力策略：该股属于弱势板，明日接力必须遵循‘弱转强’原则。弱转强标志：明日竞价超预期高开在2%以上，且开盘快速放量拉升。"
+            f"如果明日平开或低开，说明今天套牢盘压力沉重，资金弃疗，应坚决放弃关注，避免接盘。"
+        )
+    else:
+        return (
+            f"【常规轮动跟风标的】首次封板时间 {time_formatted}，换手率 {turnover}% 正常。所属行业【{sector}】今天有 {sector_count} 只涨停，"
+            f"地位属于跟风或侧翼。明日接力策略：除非明日所属板块龙头开盘封死一字板，带动资金溢出做跟风接力，否则该股性价比一般。"
+            f"建议明日不急于建仓，仅作为同板块情绪风向标观察，避免冲高回落被套。"
+        )
+
+def run_recap(date_str, trade_dates):
+    """Execute recap for a specific trading day"""
+    print(f"\n====== Running Recap for {date_str} ======")
+    date_compact = date_str.replace("-", "")
+    
+    # 1. Fetch Index recap and turnover
+    print("Fetching index market recap...")
+    idx_recap = get_index_recap(date_str)
+    
+    # 2. Fetch Limit-up pool
+    print("Fetching limit-up pool...")
+    try:
+        df_zt = ak.stock_zt_pool_em(date=date_compact)
+        print(f"Total limit-up stocks: {len(df_zt)}")
+    except Exception as e:
+        print(f"Failed to fetch limit-up pool for {date_str}: {e}")
+        return False
+        
+    if df_zt.empty:
+        print(f"No limit-up stocks on {date_str}. Skipping.")
+        return False
+        
+    # 3. Fetch Limit-down pool
+    print("Fetching limit-down pool...")
+    limit_downs = 0
+    try:
+        df_dt = ak.stock_zt_pool_dtgc_em(date=date_compact)
+        limit_downs = len(df_dt)
+        print(f"Total limit-down stocks: {limit_downs}")
+    except Exception as e:
+        print(f"Failed to fetch limit-down pool for {date_str}: {e}")
+        
+    # 4. Fetch THS hot reasons
+    print("Fetching THS concept reasons...")
+    ths_reasons = fetch_ths_reasons(date_str)
+    
+    # Clean up codes for merging
+    df_zt["代码"] = df_zt["代码"].astype(str).str.zfill(6)
+    
+    # Map THS reasons into df_zt
+    df_zt["题材归因"] = df_zt["代码"].map(ths_reasons)
+    # Fill NaN values
+    df_zt["题材归因"] = df_zt["题材归因"].fillna("")
+    
+    # Calculate sector counts and leaders
+    sector_counts = df_zt["所属行业"].value_counts().to_dict()
+    
+    # Save today's 1-board candidates list to determine tomorrow's promotion
+    # Let's filter for 1-board (连板数 == 1)
+    df_1b = df_zt[df_zt["连板数"] == 1].copy()
+    print(f"Total 1-board (首板) candidates: {len(df_1b)}")
+    
+    # Calculate 1进2 Relay Score for each 1-board stock
+    scores = []
+    playbooks = []
+    
+    for idx, row in df_1b.iterrows():
+        score = 50  # Base Score
+        
+        # A. First seal time
+        time_str = str(row["首次封板时间"]).zfill(6)
+        is_one_word = False
+        if time_str == "092500":
+            score += 25
+            is_one_word = True
+        elif time_str <= "093500":
+            score += 20
+        elif time_str <= "094500":
+            score += 15
+        elif time_str <= "103000":
+            score += 10
+        elif time_str <= "113000":
+            score += 5
+        elif time_str >= "143000":
+            score -= 15
+        elif time_str >= "130000":
+            score -= 5
+            
+        # B. Blown boards
+        blown = int(row["炸板次数"])
+        if blown == 0:
+            score += 15
+        elif blown == 1:
+            score += 5
+        elif blown == 2:
+            score -= 5
+        else:
+            score -= 15
+            
+        # C. Seal strength ratio (封板资金 / 流通市值 * 100)
+        float_mcap = float(row["流通市值"])
+        seal_funds = float(row["封板资金"])
+        seal_ratio = (seal_funds / float_mcap) * 100 if float_mcap > 0 else 0.0
+        
+        if seal_ratio >= 8.0:
+            score += 20
+        elif seal_ratio >= 4.0:
+            score += 15
+        elif seal_ratio >= 2.0:
+            score += 10
+        elif seal_ratio >= 1.0:
+            score += 5
+        elif seal_ratio < 0.5:
+            score -= 10
+            
+        # D. Market Cap
+        mcap_yi = float_mcap / 1e8
+        if mcap_yi <= 30.0:
+            score += 15
+        elif mcap_yi <= 80.0:
+            score += 10
+        elif mcap_yi <= 150.0:
+            score += 5
+        elif mcap_yi > 300.0:
+            score -= 20
+        else:
+            score -= 10
+            
+        # E. Turnover
+        turnover = float(row["换手率"])
+        if 4.0 <= turnover <= 12.0:
+            score += 10
+        elif 12.0 <= turnover <= 20.0:
+            score += 5
+        elif turnover < 2.0 and not is_one_word:
+            score -= 10
+        elif turnover > 20.0:
+            score -= 15
+            
+        # F. Sector effect
+        sector = row["所属行业"]
+        sec_count = sector_counts.get(sector, 1)
+        if sec_count >= 6:
+            score += 20
+        elif sec_count >= 4:
+            score += 15
+        elif sec_count == 3:
+            score += 10
+        elif sec_count == 2:
+            score += 5
+            
+        # Bound score between 0 and 150
+        score = max(0, min(150, score))
+        scores.append(score)
+        
+    df_1b["接力指数"] = scores
+    
+    # Now generate playbooks based on the scores
+    for idx, row in df_1b.iterrows():
+        sector = row["所属行业"]
+        sec_count = sector_counts.get(sector, 1)
+        time_str = str(row["首次封板时间"]).zfill(6)
+        is_one_word = (time_str == "092500")
+        
+        playbooks.append(generate_playbook(row, sec_count, is_one_word))
+        
+    df_1b["操作建议"] = playbooks
+    
+    # 5. Calculate Promotion Rate (昨日首板今日晋级率)
+    promotion_rate = 0.0
+    prev_date = get_previous_trading_day(date_str, trade_dates)
+    if prev_date:
+        print(f"Previous trading day is {prev_date}. Calculating promotion rate...")
+        # Get yesterday's candidates from DB
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT code FROM candidates WHERE date = ? AND consecutive_boards = 1", (prev_date,))
+        prev_candidates = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        
+        if prev_candidates:
+            # Find today's 2-board (连板数 == 2) stocks in today's pool
+            df_2b = df_zt[df_zt["连板数"] == 2]
+            today_2b_codes = set(df_2b["代码"].tolist())
+            
+            successful_promotions = set(prev_candidates).intersection(today_2b_codes)
+            promotion_rate = (len(successful_promotions) / len(prev_candidates)) * 100
+            print(f"Yesterday 1-board count: {len(prev_candidates)}")
+            print(f"Today 2-board count: {len(df_2b)}")
+            print(f"Successful promotions: {len(successful_promotions)} ({promotion_rate:.2f}%)")
+        else:
+            print("No candidates stored for yesterday in the database. Can't calculate promotion rate yet.")
+    else:
+        print("No previous trading day found. Promotion rate set to 0.0.")
+        
+    # 6. Fetch Northbound Flow (only if date is today)
+    hgt_flow, sgt_flow = 0.0, 0.0
+    is_today = (date_str == datetime.now().strftime('%Y-%m-%d'))
+    if is_today:
+        print("Fetching realtime northbound capital flow...")
+        hgt_flow, sgt_flow = fetch_northbound_flow()
+        print(f"Northbound Flow - HGT: {hgt_flow:.2f}亿, SGT: {sgt_flow:.2f}亿")
+        
+    # 7. Sector rankings JSON
+    sorted_sectors = sorted(sector_counts.items(), key=lambda x: x[1], reverse=True)
+    sector_ranking_list = []
+    for sec_name, count in sorted_sectors[:10]:
+        # Find the stock with highest turnover or earliest seal in this sector
+        df_sec = df_zt[df_zt["所属行业"] == sec_name]
+        leader_name = "无"
+        if not df_sec.empty:
+            # Sort by 连板数 desc, then 首次封板时间 asc
+            df_sec_sorted = df_sec.sort_values(by=["连板数", "首次封板时间"], ascending=[False, True])
+            leader_name = df_sec_sorted.iloc[0]["名称"]
+        sector_ranking_list.append({
+            "name": sec_name,
+            "count": count,
+            "leader": leader_name
+        })
+        
+    sector_ranking_json = json.dumps(sector_ranking_list, ensure_ascii=False)
+    
+    # 8. Classify Market Sentiment
+    sentiment_label = "中性"
+    total_lu = len(df_zt)
+    if total_lu >= 110 and limit_downs <= 5:
+        sentiment_label = "极度活跃"
+    elif total_lu >= 80 and limit_downs <= 10:
+        sentiment_label = "活跃"
+    elif limit_downs >= 25:
+        sentiment_label = "恐慌冰点"
+    elif limit_downs >= 12 and total_lu < 50:
+        sentiment_label = "低迷降温"
+    elif total_lu <= 40:
+        sentiment_label = "观望低频"
+        
+    # 9. Save to Database
+    print("Writing recap details to SQLite database...")
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Insert all limit-ups into archive for retroactive backtesting
+    cursor.execute("DELETE FROM limit_ups_archive WHERE date = ?", (date_str,))
+    for idx, row in df_zt.iterrows():
+        cursor.execute("INSERT OR REPLACE INTO limit_ups_archive (date, code, name, consecutive_boards) VALUES (?, ?, ?, ?)", (
+            date_str,
+            row["代码"],
+            row["名称"],
+            int(row["连板数"])
+        ))
+    
+    # Insert or replace market_recap
+    cursor.execute("""
+        INSERT OR REPLACE INTO market_recap (
+            date, sh_price, sh_change, sz_price, sz_change, cy_price, cy_change,
+            total_turnover, limit_ups, limit_downs, promotion_rate, hgt_flow, sgt_flow,
+            sentiment, sector_ranking
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        date_str,
+        idx_recap.get("sh", {}).get("price", 0.0),
+        idx_recap.get("sh", {}).get("change", 0.0),
+        idx_recap.get("sz", {}).get("price", 0.0),
+        idx_recap.get("sz", {}).get("change", 0.0),
+        idx_recap.get("cy", {}).get("price", 0.0),
+        idx_recap.get("cy", {}).get("change", 0.0),
+        idx_recap.get("total_turnover", 0.0),
+        total_lu,
+        limit_downs,
+        round(promotion_rate, 2),
+        hgt_flow,
+        sgt_flow,
+        sentiment_label,
+        sector_ranking_json
+    ))
+    
+    # Insert candidates (delete old candidates for this date first)
+    cursor.execute("DELETE FROM candidates WHERE date = ?", (date_str,))
+    
+    for idx, row in df_1b.iterrows():
+        float_mcap = float(row["流通市值"])
+        seal_funds = float(row["封板资金"])
+        seal_ratio = (seal_funds / float_mcap) * 100 if float_mcap > 0 else 0.0
+        
+        cursor.execute("""
+            INSERT INTO candidates (
+                date, code, name, price, change_pct, turnover, float_mcap, seal_funds,
+                seal_ratio, first_seal_time, blown_count, consecutive_boards, sector,
+                concept, score, playbook
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            date_str,
+            row["代码"],
+            row["名称"],
+            float(row["最新价"]),
+            float(row["涨跌幅"]),
+            float(row["换手率"]),
+            round(float_mcap / 1e9, 2),  # Convert to Billion RMB
+            round(seal_funds / 1e6, 2),  # Convert to Million RMB
+            round(seal_ratio, 2),
+            str(row["首次封板时间"]).zfill(6),
+            int(row["炸板次数"]),
+            int(row["连板数"]),
+            row["所属行业"],
+            row["题材归因"],
+            int(row["接力指数"]),
+            row["操作建议"]
+        ))
+        
+    conn.commit()
+    conn.close()
+    
+    print(f"Recap for {date_str} completed successfully!")
+    return True
+
+def calculate_calibration_stats(conn):
+    """Calculate historical promotion rates for score buckets"""
+    cursor = conn.cursor()
+    try:
+        # Check if limit_ups_archive table exists and has data
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='limit_ups_archive'")
+        if not cursor.fetchone():
+            return []
+            
+        df_cands = pd.read_sql_query(
+            "SELECT date, code, score FROM candidates WHERE consecutive_boards = 1", conn
+        )
+        df_promoted = pd.read_sql_query(
+            "SELECT date, code FROM limit_ups_archive WHERE consecutive_boards = 2", conn
+        )
+        
+        if df_cands.empty or df_promoted.empty:
+            return []
+            
+        # Find next trading day mapping
+        dates_sorted = sorted(df_cands["date"].unique())
+        date_to_next = {dates_sorted[i]: dates_sorted[i+1] for i in range(len(dates_sorted) - 1)}
+        
+        promoted_keys = set(zip(df_promoted["date"], df_promoted["code"]))
+        
+        success_flags = []
+        for _, row in df_cands.iterrows():
+            curr_date = row["date"]
+            next_date = date_to_next.get(curr_date)
+            code = row["code"]
+            if next_date and (next_date, code) in promoted_keys:
+                success_flags.append(1)
+            else:
+                success_flags.append(0)
+                
+        df_cands["success"] = success_flags
+        
+        buckets = [
+            {"name": "极强接力 (>=120分)", "min": 120, "max": 150},
+            {"name": "黄金接力 (100-119分)", "min": 100, "max": 119},
+            {"name": "强势潜力 (80-99分)", "min": 80, "max": 99},
+            {"name": "弱势跟风 (<80分)", "min": 0, "max": 79}
+        ]
+        
+        results = []
+        for b in buckets:
+            df_b = df_cands[(df_cands["score"] >= b["min"]) & (df_cands["score"] <= b["max"])]
+            total = len(df_b)
+            promoted = df_b["success"].sum() if total > 0 else 0
+            rate = (promoted / total * 100) if total > 0 else 0.0
+            results.append({
+                "bucket_name": b["name"],
+                "score_range": f"{b['min']}-{b['max']}",
+                "total_count": int(total),
+                "promoted_count": int(promoted),
+                "win_rate": round(rate, 2)
+            })
+        return results
+    except Exception as e:
+        print(f"Error calculating calibration stats: {e}")
+        return []
+
+def export_data():
+    """Export the last 30 trading days of data from SQLite database to recap_history.js"""
+    print("\nExporting database to JavaScript file...")
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Fetch last 150 market recaps
+    cursor.execute("SELECT * FROM market_recap ORDER BY date DESC LIMIT 150")
+    recap_rows = cursor.fetchall()
+    
+    recap_cols = [
+        "date", "sh_price", "sh_change", "sz_price", "sz_change", "cy_price", "cy_change",
+        "total_turnover", "limit_ups", "limit_downs", "promotion_rate", "hgt_flow", "sgt_flow",
+        "sentiment", "sector_ranking"
+    ]
+    
+    history_list = []
+    for row in recap_rows:
+        recap_dict = dict(zip(recap_cols, row))
+        
+        # Parse sector ranking JSON
+        try:
+            recap_dict["sector_ranking"] = json.loads(recap_dict["sector_ranking"])
+        except Exception:
+            recap_dict["sector_ranking"] = []
+            
+        # Fetch candidates for this date
+        date_str = recap_dict["date"]
+        cursor.execute("SELECT * FROM candidates WHERE date = ? ORDER BY score DESC", (date_str,))
+        candidate_rows = cursor.fetchall()
+        
+        candidate_cols = [
+            "date", "code", "name", "price", "change_pct", "turnover", "float_mcap",
+            "seal_funds", "seal_ratio", "first_seal_time", "blown_count", "consecutive_boards",
+            "sector", "concept", "score", "playbook"
+        ]
+        
+        candidates_list = []
+        for c_row in candidate_rows:
+            c_dict = dict(zip(candidate_cols, c_row))
+            # Format seal time as HH:MM:SS
+            t = c_dict["first_seal_time"]
+            if len(t) == 6:
+                c_dict["first_seal_time_formatted"] = f"{t[:2]}:{t[2:4]}:{t[4:]}"
+            else:
+                c_dict["first_seal_time_formatted"] = t
+            candidates_list.append(c_dict)
+            
+        recap_data = {
+            "date": date_str,
+            "market": recap_dict,
+            "candidates": candidates_list
+        }
+        history_list.append(recap_data)
+        
+    calibration_data = calculate_calibration_stats(conn)
+    conn.close()
+    
+    # Write history_list and calibration_data as JS script variables
+    js_content = (
+        f"window.RECAP_HISTORY = {json.dumps(history_list, ensure_ascii=False, indent=2)};\n"
+        f"window.RECAP_CALIBRATION = {json.dumps(calibration_data, ensure_ascii=False, indent=2)};"
+    )
+    with open(JS_PATH, "w", encoding="utf-8") as f:
+        f.write(js_content)
+        
+    print(f"Data exported to {JS_PATH}")
+
+def generate_html():
+    """Generate beautiful index.html template"""
+    print("\nGenerating interactive index.html dashboard...")
+    html_content = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>A股 1进2 接力复盘控制台</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Vue 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: #08090a;
+            color: #94a3b8;
+        }
+        .mono-font {
+            font-family: 'Fira Code', 'Courier New', Courier, monospace;
+        }
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 4px;
+            height: 4px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #08090a;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #1e222b;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #2e3440;
+        }
+    </style>
+</head>
+<body class="min-h-screen pb-12">
+    <div id="app" v-cloak class="container mx-auto px-4 py-6 max-w-7xl">
+        
+        <!-- Header -->
+        <header class="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-[#1e222b] pb-4 mb-6 gap-4">
+            <div>
+                <h1 class="text-2xl font-bold tracking-tight text-white flex items-center gap-2 uppercase">
+                    <span class="text-red-500">■</span> A股 1进2 接力复盘控制台
+                </h1>
+                <p class="text-gray-500 text-xs mt-1 uppercase tracking-wide mono-font">1进2 连板接力分析控制台</p>
+            </div>
+            
+            <div class="flex flex-wrap items-center gap-4">
+                <!-- Timeline Simulator -->
+                <div class="flex items-center gap-2">
+                    <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">竞价时段模拟:</span>
+                    <select v-model="simTimePhase" class="bg-[#0e1013] border border-[#1e222b] rounded-none px-3 py-1.5 text-xs text-white font-medium focus:outline-none focus:border-red-500 mono-font" aria-label="选择复盘日期">
+                        <option value="real">系统实时时间</option>
+                        <option value="915">模拟 09:17 (虚假试盘)</option>
+                        <option value="920">模拟 09:22 (真实竞价)</option>
+                        <option value="925">模拟 09:26 (竞价定格)</option>
+                        <option value="930">模拟 09:35 (盘中交易)</option>
+                    </select>
+                </div>
+                
+                <div class="flex items-center gap-2">
+                    <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">选择复盘日期:</span>
+                    <select v-model="selectedDate" class="bg-[#0e1013] border border-[#1e222b] rounded-none px-3 py-1.5 text-xs text-white font-medium focus:outline-none focus:border-red-500 mono-font" aria-label="选择复盘日期">
+                        <option v-for="date in availableDates" :key="date" :value="date">{{ date }}</option>
+                    </select>
+                </div>
+                <div class="border border-red-900 bg-red-950/20 text-red-400 px-3 py-1.5 rounded-none text-2xs font-bold uppercase tracking-wider mono-font">
+                    连板接力模式
+                </div>
+            </div>
+        </header>
+
+        <div v-if="!currentRecap" class="text-center py-20 text-gray-500">
+            <i data-lucide="loader" class="animate-spin w-10 h-10 mx-auto mb-4 text-red-500"></i>
+            系统数据加载中...
+        </div>
+
+        <div v-else class="space-y-4">
+            
+            <!-- Top Row: Sentiment Console & Trends -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <!-- Sentiment Console (1/3) -->
+                <div class="border border-[#1e222b] bg-[#0e1013] p-5 flex flex-col justify-between">
+                    <div>
+                        <div class="border-b border-[#1e222b] pb-2 mb-4">
+                            <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">市场短线情绪</span>
+                        </div>
+                        
+                        <!-- SVG Dial -->
+                        <div class="py-4 relative flex flex-col items-center">
+                            <svg viewBox="0 0 120 70" class="w-36 h-20">
+                                <!-- Arc background -->
+                                <path d="M 10 60 A 50 50 0 0 1 110 60" fill="none" stroke="#1d212a" stroke-width="8" stroke-linecap="square"/>
+                                <!-- Ticks -->
+                                <line x1="10" y1="60" x2="16" y2="60" stroke="#22c55e" stroke-width="2" />
+                                <line x1="60" y1="10" x2="60" y2="16" stroke="#475569" stroke-width="2" />
+                                <line x1="104" y1="60" x2="110" y2="60" stroke="#ef4444" stroke-width="2" />
+                                <!-- Needle -->
+                                <line x1="60" y1="60" x2="60" y2="18" stroke="#ef4444" stroke-width="2.5" stroke-linecap="square"
+                                      :style="{ transform: 'rotate(' + needleAngle + 'deg)', transformOrigin: '60px 60px' }" class="transition-transform duration-500 ease-out" />
+                                <!-- Center pin -->
+                                <circle cx="60" cy="60" r="4.5" fill="#e2e8f0" />
+                            </svg>
+                            <div class="text-2xl font-bold mt-2 uppercase tracking-wide" :class="sentimentColorClass">
+                                {{ currentRecap.market.sentiment }}
+                            </div>
+                        </div>
+                        
+                        <!-- Core Stats -->
+                        <div class="space-y-2 border-t border-[#1e222b] pt-3 text-2xs mono-font">
+                            <div class="flex justify-between items-center">
+                                <span class="text-[#8b9bb4]">全市场涨停家数</span>
+                                <span class="text-white font-bold">{{ currentRecap.market.limit_ups }}</span>
+                            </div>
+                            <div class="flex justify-between items-center">
+                                <span class="text-[#8b9bb4]">全市场跌停家数</span>
+                                <span class="text-white font-bold">{{ currentRecap.market.limit_downs }}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Quant Win Rate Backtest Stats -->
+                    <div class="border-t border-[#1e222b] pt-3 mt-3">
+                        <span class="text-[#8b9bb4] text-3xs uppercase tracking-wider font-semibold block mb-2">量化胜率校验 / 历史晋级率回测</span>
+                        <div class="space-y-1.5 text-3xs mono-font">
+                            <div v-for="cal in calibrationData" :key="cal.score_range" class="flex justify-between items-center">
+                                <span class="text-gray-500">{{ cal.bucket_name.split(' ')[0] }} ({{ cal.score_range }}分)</span>
+                                <span class="font-bold" :class="cal.win_rate >= 15 ? 'text-red-500' : 'text-gray-400'">
+                                    {{ cal.win_rate.toFixed(2) }}% <span class="text-gray-600 font-normal">({{ cal.promoted_count }}/{{ cal.total_count }})</span>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Trend chart (2/3) -->
+                <div class="lg:col-span-2 border border-[#1e222b] bg-[#0e1013] p-5 flex flex-col justify-between">
+                    <div class="flex justify-between items-center border-b border-[#1e222b] pb-2 mb-4">
+                        <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">1进2  晋级率与总涨停家数历史趋势</span>
+                        <span class="text-2xs text-gray-500 uppercase tracking-wider font-semibold mono-font">最近15个交易日</span>
+                    </div>
+                    <div class="h-[210px] relative">
+                        <canvas id="trendChart"></canvas>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4 border-t border-[#1e222b] pt-3 text-2xs mono-font">
+                        <div class="flex justify-between">
+                            <span class="text-[#8b9bb4]">今日1进2晋级率</span>
+                            <span class="text-red-500 font-bold">{{ currentRecap.market.promotion_rate.toFixed(2) }}%</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-[#8b9bb4]">两市总成交额</span>
+                            <span class="text-white font-bold">{{ currentRecap.market.total_turnover.toFixed(1) }} 亿</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Index & Northbound Row -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <!-- SH Index -->
+                <div class="border border-[#1e222b] bg-[#0e1013] p-4 flex flex-col justify-between">
+                    <div class="flex justify-between items-center text-[#8b9bb4] text-2xs uppercase">
+                        <span>上证指数</span>
+                        <span class="mono-font text-3xs">000001</span>
+                    </div>
+                    <div class="mt-2 flex justify-between items-baseline">
+                        <span class="text-lg font-bold text-white mono-font">{{ currentRecap.market.sh_price.toFixed(2) }}</span>
+                        <span :class="currentRecap.market.sh_change >= 0 ? 'text-red-500' : 'text-green-500'" class="text-xs font-bold mono-font">
+                            {{ currentRecap.market.sh_change >= 0 ? '+' : '' }}{{ currentRecap.market.sh_change.toFixed(2) }}%
+                        </span>
+                    </div>
+                </div>
+                <!-- SZ Index -->
+                <div class="border border-[#1e222b] bg-[#0e1013] p-4 flex flex-col justify-between">
+                    <div class="flex justify-between items-center text-[#8b9bb4] text-2xs uppercase">
+                        <span>深证成指</span>
+                        <span class="mono-font text-3xs">399001</span>
+                    </div>
+                    <div class="mt-2 flex justify-between items-baseline">
+                        <span class="text-lg font-bold text-white mono-font">{{ currentRecap.market.sz_price.toFixed(2) }}</span>
+                        <span :class="currentRecap.market.sz_change >= 0 ? 'text-red-500' : 'text-green-500'" class="text-xs font-bold mono-font">
+                            {{ currentRecap.market.sz_change >= 0 ? '+' : '' }}{{ currentRecap.market.sz_change.toFixed(2) }}%
+                        </span>
+                    </div>
+                </div>
+                <!-- CY Index -->
+                <div class="border border-[#1e222b] bg-[#0e1013] p-4 flex flex-col justify-between">
+                    <div class="flex justify-between items-center text-[#8b9bb4] text-2xs uppercase">
+                        <span>创业板指</span>
+                        <span class="mono-font text-3xs">399006</span>
+                    </div>
+                    <div class="mt-2 flex justify-between items-baseline">
+                        <span class="text-lg font-bold text-white mono-font">{{ currentRecap.market.cy_price.toFixed(2) }}</span>
+                        <span :class="currentRecap.market.cy_change >= 0 ? 'text-red-500' : 'text-green-500'" class="text-xs font-bold mono-font">
+                            {{ currentRecap.market.cy_change >= 0 ? '+' : '' }}{{ currentRecap.market.cy_change.toFixed(2) }}%
+                        </span>
+                    </div>
+                </div>
+                <!-- Northbound Net Flow -->
+                <div class="border border-[#1e222b] bg-[#0e1013] p-4 flex flex-col justify-between">
+                    <div class="flex justify-between items-center text-[#8b9bb4] text-2xs uppercase">
+                        <span>北向资金流向</span>
+                        <span class="bg-[#1b1c24] border border-[#24262b] px-1 text-3xs font-semibold">净买入</span>
+                    </div>
+                    <div class="mt-2 flex justify-between items-baseline">
+                        <span class="text-lg font-bold mono-font text-white">
+                            {{ (currentRecap.market.hgt_flow + currentRecap.market.sgt_flow) >= 0 ? '+' : '' }}{{ (currentRecap.market.hgt_flow + currentRecap.market.sgt_flow).toFixed(2) }}亿
+                        </span>
+                        <span class="text-3xs text-gray-500 mono-font">沪:{{ currentRecap.market.hgt_flow.toFixed(1) }} 深:{{ currentRecap.market.sgt_flow.toFixed(1) }}</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Top 5 Focus Candidates (Vertical List layout) -->
+            <div class="border border-[#1e222b] bg-[#0e1013] p-5">
+                <div class="border-b border-[#1e222b] pb-2 mb-4 flex justify-between items-center">
+                    <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">重点关注首板标的</span>
+                    <span class="text-2xs text-[#ef4444] font-bold uppercase tracking-wider mono-font">接力因子前五强</span>
+                </div>
+                <div class="divide-y divide-[#1e222b]">
+                    <div v-for="(c, idx) in topCandidates" :key="c.code" class="py-4 first:pt-0 last:pb-0 flex flex-col md:flex-row justify-between gap-4">
+                        <!-- Left: Stock Metrics -->
+                        <div class="w-full md:w-1/3 flex flex-col justify-between gap-2">
+                            <div class="flex justify-between items-start">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-xs px-2 py-0.5 font-bold border" :class="idx === 0 ? 'bg-red-950 text-red-400 border-red-900' : 'bg-[#1b1c24] text-gray-400 border-[#24262b]'">
+                                        NO.{{ idx + 1 }}
+                                    </span>
+                                    <span class="text-base font-bold text-white tracking-tight">{{ c.name }}</span>
+                                    <span class="text-xs font-semibold text-gray-500 mono-font">{{ c.code }}</span>
+                                </div>
+                                <div class="flex gap-2">
+                                    <span class="text-xs text-yellow-500 font-bold border border-yellow-500/20 px-2 py-0.5 bg-yellow-500/5 mono-font">
+                                        接力指数: {{ c.score }}
+                                    </span>
+                                    <button @click.stop="buyStock(c, c.price)" 
+                                            class="bg-red-950/40 border border-red-900/50 text-red-400 hover:bg-red-900 hover:text-white px-2 py-0.5 text-2xs font-semibold select-none transition-all">
+                                        模拟买入
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-4 gap-2 mt-2 text-3xs mono-font text-gray-500 uppercase">
+                                <div>
+                                    <div>首次封板时间</div>
+                                    <div class="text-white font-medium mt-0.5">{{ c.first_seal_time_formatted }}</div>
+                                </div>
+                                <div>
+                                    <div>日内炸板次数</div>
+                                    <div class="text-white font-medium mt-0.5" :class="c.blown_count >= 2 ? 'text-yellow-500 font-semibold' : ''">{{ c.blown_count }}</div>
+                                </div>
+                                <div>
+                                    <div>日内换手率</div>
+                                    <div class="text-white font-medium mt-0.5">{{ c.turnover.toFixed(2) }}%</div>
+                                </div>
+                                <div>
+                                    <div>流通市值</div>
+                                    <div class="text-white font-medium mt-0.5">{{ c.float_mcap.toFixed(2) }} 亿</div>
+                                </div>
+                            </div>
+                            <div class="text-2xs text-[#8b9bb4] mt-1 font-semibold uppercase">
+                                所属行业: <span class="text-gray-300 normal-case">{{ c.sector }}</span>
+                            </div>
+                        </div>
+                        <!-- Right: Action advice -->
+                        <div class="w-full md:w-2/3 bg-[#08090a] p-4 border border-[#1e222b] text-xs text-gray-300 leading-relaxed font-mono flex items-center border-l-2 border-l-red-500/50">
+                            {{ c.playbook }}
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 次日实战操作控制台 -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <!-- 竞价监控哨口 (2/3) -->
+                <div class="lg:col-span-2 border border-[#1e222b] bg-[#0e1013] p-5 flex flex-col justify-between">
+                    <div>
+                        <div class="border-b border-[#1e222b] pb-2 mb-4 flex justify-between items-center">
+                            <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">次日竞价监控哨 / 量化上车标准</span>
+                            <div class="flex gap-2">
+                                <button @click="fetchLiveQuotes" 
+                                        class="bg-red-950 border border-red-900 text-red-400 hover:bg-red-900 hover:text-white px-2 py-1 text-3xs font-bold transition-all uppercase tracking-wider mono-font">
+                                    刷新今日实时竞价 (09:25后生效)
+                                </button>
+                                <span class="text-2xs text-[#ef4444] font-bold uppercase tracking-wider mono-font">MORNING AUCTION TARGETS</span>
+                            </div>
+                        </div>
+
+                        <!-- 竞价分时决策指示器 -->
+                        <div class="mb-3 border p-3 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 transition-all duration-300 rounded-none"
+                             :class="activeTimePhase.bgClass">
+                            <div class="flex items-center gap-2">
+                                <span class="w-2.5 h-2.5 rounded-full" :class="activeTimePhase.dotClass"></span>
+                                <span class="text-2xs font-bold text-white uppercase tracking-wider mono-font">
+                                    竞价哨口监控状态: {{ activeTimePhase.name }}
+                                </span>
+                            </div>
+                            <p class="text-3xs font-semibold leading-relaxed" :class="activeTimePhase.textClass">
+                                {{ activeTimePhase.warning }}
+                            </p>
+                        </div>
+                        
+                        <!-- Horizontal Row Panels -->
+                        <div class="space-y-2">
+                            <div v-for="c in topCandidates" :key="c.code + '-target'" 
+                                 @click="simStockCode = c.code"
+                                 @keyup.enter="simStockCode = c.code"
+                                 @keyup.space.prevent="simStockCode = c.code"
+                                 role="button"
+                                 tabindex="0"
+                                 :class="simStockCode === c.code ? 'border-red-500 bg-red-950/5 focus:ring-1 focus:ring-red-500' : 'border-[#1e222b] bg-[#0e1013] hover:border-red-500/20 focus:ring-1 focus:ring-red-500'"
+                                 class="border p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 cursor-pointer transition-all duration-200 select-none focus:outline-none">
+                                
+                                <!-- Part 1: Stock Identity -->
+                                <div class="w-full sm:w-1/4">
+                                    <h4 class="text-sm font-extrabold text-white flex items-center gap-1.5">
+                                        <span class="w-1.5 h-1.5" :class="simStockCode === c.code ? 'bg-red-500 animate-pulse' : 'bg-gray-600'"></span> {{ c.name }}
+                                    </h4>
+                                    <p class="text-3xs text-gray-500 mono-font mt-0.5">{{ c.code }} · {{ c.sector }}</p>
+                                </div>
+                                
+                                <!-- Part 2: Monospace metrics (3 columns) -->
+                                <div class="w-full sm:w-1/2 grid grid-cols-3 gap-2 text-3xs mono-font">
+                                    <div>
+                                        <div class="text-gray-600">昨日收盘</div>
+                                        <div class="text-red-500 font-bold mt-0.5">{{ c.price.toFixed(2) }}元</div>
+                                    </div>
+                                    <div>
+                                        <div class="text-gray-600">理想开盘 (2%~5%)</div>
+                                        <div class="text-yellow-500 font-bold mt-0.5">{{ (c.price * 1.02).toFixed(2) }} ~ {{ (c.price * 1.05).toFixed(2) }}元</div>
+                                        <!-- Actual open from live data -->
+                                        <div v-if="liveData[c.code]" class="mt-1 pt-1 border-t border-[#1e222b]">
+                                            <span class="text-gray-500">实际开盘: </span>
+                                            <span :class="liveData[c.code].change >= 0 ? 'text-red-500' : 'text-green-500'" class="font-bold">
+                                                {{ liveData[c.code].change >= 0 ? '+' : '' }}{{ liveData[c.code].change.toFixed(2) }}%
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <div class="text-gray-600">目标竞价额 (10%昨成交)</div>
+                                        <div class="text-red-400 font-bold mt-0.5">&gt;{{ (c.float_mcap * c.turnover * 10).toFixed(0) }}万</div>
+                                        <!-- Actual auction volume from live data -->
+                                        <div v-if="liveData[c.code]" class="mt-1 pt-1 border-t border-[#1e222b]">
+                                            <span class="text-gray-500">实际竞价: </span>
+                                            <span :class="isVolMet(c) ? 'text-red-400 font-bold' : 'text-gray-400'" class="font-bold">
+                                                {{ liveData[c.code].turnover.toFixed(0) }}万
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Part 3: Strategy summary -->
+                                <div class="w-full sm:w-1/4 text-right text-3xs text-gray-400 leading-normal flex flex-col items-end gap-1">
+                                    <span class="font-semibold">{{ c.score >= 115 ? '高溢价高要求，爆量高开为强' : '弱转强首选，高开回踩支撑进场' }}</span>
+                                    <div v-if="liveData[c.code]" class="mt-2">
+                                        <span v-if="isSignalMet(c)" class="bg-red-950 text-red-400 border border-red-900 px-2 py-0.5 font-bold animate-pulse">
+                                            🚀 竞价强承接 (达标)
+                                        </span>
+                                        <span v-else class="bg-gray-900 text-gray-500 border border-gray-800 px-2 py-0.5 font-medium">
+                                            未达标
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="text-3xs text-gray-500 mt-4 leading-relaxed border-t border-[#1e222b] pt-2">
+                        * 使用说明：点击上方股票行可直接聚焦右侧决策模拟器。明日 09:25 竞价结束时，若实际开盘价与竞价成交额达到上述标准，说明资金入场强劲，符合量化上车要求。
+                    </div>
+                </div>
+
+                <!-- 1进2上车决策模拟器 (1/3) -->
+                <div class="border border-[#1e222b] bg-[#0e1013] p-5 flex flex-col justify-between">
+                    <div>
+                        <div class="border-b border-[#1e222b] pb-2 mb-4">
+                            <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">1进2 实战上车决策器 / 模拟判定</span>
+                        </div>
+                        
+                        <div class="space-y-3">
+                            <!-- 1. Select Stock -->
+                            <div>
+                                <label class="text-[#8b9bb4] text-3xs uppercase block font-semibold mb-1">选择目标股:</label>
+                                <select v-model="simStockCode" class="w-full bg-[#08090a] border border-[#1e222b] rounded-none px-2 py-1 text-2xs text-white focus:outline-none focus:border-red-500 mono-font" aria-label="选择模拟目标股">
+                                    <option v-for="c in topCandidates" :key="c.code + '-sim'" :value="c.code">{{ c.name }} ({{ c.code }})</option>
+                                </select>
+                            </div>
+                            
+                            <!-- 2. Select Open % -->
+                            <div>
+                                <label class="text-[#8b9bb4] text-3xs uppercase block font-semibold mb-1">明日 09:25 开盘涨幅:</label>
+                                <select v-model="simOpenType" class="w-full bg-[#08090a] border border-[#1e222b] rounded-none px-2 py-1 text-2xs text-white focus:outline-none focus:border-red-500" aria-label="选择明日开盘涨幅">
+                                    <option value="fever">高烧低走区 (高开 >6% 或一字板)</option>
+                                    <option value="ideal">理想溢价区 (高开 2% ~ 5%)</option>
+                                    <option value="mild">温和试探区 (高开 0% ~ 2%)</option>
+                                    <option value="low">低开分歧区 (平开或低开 &lt;0%)</option>
+                                </select>
+                            </div>
+                            
+                            <!-- 3. Select Volume -->
+                            <div>
+                                <label class="text-[#8b9bb4] text-3xs uppercase block font-semibold mb-1">明日 09:25 竞价成交额:</label>
+                                <select v-model="simVolType" class="w-full bg-[#08090a] border border-[#1e222b] rounded-none px-2 py-1 text-2xs text-white focus:outline-none focus:border-red-500" aria-label="选择明日竞价成交量">
+                                    <option value="met">放量达标 (达到或超出目标值)</option>
+                                    <option value="not_met">缩量未达标 (低于目标值)</option>
+                                </select>
+                            </div>
+
+                            <!-- 4. Select Open Trend -->
+                            <div>
+                                <label class="text-[#8b9bb4] text-3xs uppercase block font-semibold mb-1">开盘前15分钟分时走势:</label>
+                                <select v-model="simTrendType" class="w-full bg-[#08090a] border border-[#1e222b] rounded-none px-2 py-1 text-2xs text-white focus:outline-none focus:border-red-500" aria-label="选择开盘分时走势">
+                                    <option value="breakout">高开下探不破分时均线，放量突破开盘价</option>
+                                    <option value="limit_up">开盘爆量单边直线拉升，极速封死二板</option>
+                                    <option value="weak">冲高后无量下杀，跌破均线且不翻红</option>
+                                    <option value="low_bounce">低开震荡后强力翻红，放量突破昨日收盘价</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Simulator Result -->
+                    <div class="mt-4 p-3 border border-[#1e222b] bg-[#08090a] text-2xs">
+                        <div class="flex justify-between items-center font-bold mb-1" :class="simResult.color">
+                            <span>决策判定: {{ simResult.decision }}</span>
+                            <span class="text-3xs uppercase tracking-wide border px-1" :class="simResult.border">{{ simResult.badge }}</span>
+                        </div>
+                        <p class="text-gray-400 leading-relaxed font-mono mt-1">{{ simResult.reason }}</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 模拟实战交易账本 -->
+            <div class="border border-[#1e222b] bg-[#0e1013] p-5">
+                <div class="border-b border-[#1e222b] pb-2 mb-4 flex justify-between items-center">
+                    <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">模拟实战交易账本 / PORTFOLIO & LEDGER</span>
+                    <span class="text-2xs text-yellow-500 font-bold uppercase tracking-wider mono-font">MOCK PAPER TRADING JOURNAL</span>
+                </div>
+                
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <!-- Left: Portfolio & Logs (2/3) -->
+                    <div class="lg:col-span-2 space-y-4">
+                        <!-- Tab Selector -->
+                        <div class="flex gap-2 border-b border-[#1e222b] pb-2 text-2xs font-semibold">
+                            <button @click="ledgerTab = 'portfolio'" 
+                                    :class="ledgerTab === 'portfolio' ? 'text-red-500 border-b border-red-500' : 'text-[#8b9bb4]'"
+                                    class="pb-1 px-1 uppercase tracking-wider">
+                                当前持仓 ({{ portfolio.length }})
+                            </button>
+                            <button @click="ledgerTab = 'log'" 
+                                    :class="ledgerTab === 'log' ? 'text-red-500 border-b border-red-500' : 'text-[#8b9bb4]'"
+                                    class="pb-1 px-1 uppercase tracking-wider">
+                                交易日志 ({{ tradeLog.length }})
+                            </button>
+                        </div>
+                        
+                        <!-- Tab 1: Current Portfolio -->
+                        <div v-if="ledgerTab === 'portfolio'" class="space-y-2">
+                            <div v-if="portfolio.length === 0" class="text-center py-8 text-gray-600 text-xs">
+                                暂无持仓股。可在下方股票池中点击“买入”或顶部五强中点击“模拟买入”进行建仓。
+                            </div>
+                            <div v-for="p in portfolio" :key="p.code" 
+                                 class="bg-[#08090a] p-4 border border-[#1e222b] flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                                <div class="w-full sm:w-1/4">
+                                    <h5 class="text-xs font-bold text-white flex items-center gap-1.5">
+                                        <span class="w-1.5 h-1.5 bg-red-500 animate-pulse"></span> {{ p.name }}
+                                    </h5>
+                                    <p class="text-3xs text-gray-500 mono-font mt-0.5">{{ p.code }} · {{ p.sector }}</p>
+                                </div>
+                                <div class="w-full sm:w-1/2 grid grid-cols-4 gap-2 text-3xs mono-font">
+                                    <div>
+                                        <div class="text-gray-600">建仓日期/均价</div>
+                                        <div class="text-white mt-0.5">{{ p.buy_date.substring(5) }} / {{ p.buy_price.toFixed(2) }}</div>
+                                    </div>
+                                    <div>
+                                        <div class="text-gray-600">持股股数/市值</div>
+                                        <div class="text-white mt-0.5">{{ p.shares }}股 / {{ (p.shares * getValuationPrice(p.code, p.buy_price)).toFixed(0) }}</div>
+                                    </div>
+                                    <div>
+                                        <div class="text-gray-600">今日估值/盈亏</div>
+                                        <div class="text-white mt-0.5 font-semibold" :class="getPnlColor(p)">
+                                            {{ getValuationPrice(p.code, p.buy_price).toFixed(2) }} / {{ getFloatingPnl(p) >= 0 ? '+' : '' }}{{ getFloatingPnl(p).toFixed(0) }}
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <div class="text-gray-600">盈亏比例</div>
+                                        <div class="text-white mt-0.5 font-bold" :class="getPnlColor(p)">
+                                            {{ getFloatingPnlPct(p) >= 0 ? '+' : '' }}{{ getFloatingPnlPct(p).toFixed(2) }}%
+                                        </div>
+                                    </div>
+                                </div>
+                                <!-- Exit advice & Sell button -->
+                                <div class="w-full sm:w-1/4 flex flex-col items-end gap-1.5">
+                                    <span class="text-3xs px-2 py-0.5 border" :class="getExitAdvice(p).color">
+                                        {{ getExitAdvice(p).text }}
+                                    </span>
+                                    <button @click="triggerSell(p)" 
+                                            class="bg-red-950 border border-red-900 text-red-400 hover:bg-red-900 hover:text-white px-3 py-1 text-3xs font-bold transition-all">
+                                        虚拟平仓
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Tab 2: Trade Log -->
+                        <div v-if="ledgerTab === 'log'" class="overflow-x-auto max-h-[300px] overflow-y-auto pr-1">
+                            <div v-if="tradeLog.length === 0" class="text-center py-8 text-gray-600 text-xs">
+                                暂无历史平仓记录。
+                            </div>
+                            <table v-else class="w-full text-left text-3xs border-collapse">
+                                <thead>
+                                    <tr class="border-b border-[#1e222b] text-gray-500 font-bold uppercase tracking-wider bg-[#08090a]">
+                                        <th class="py-2 px-2">代码</th>
+                                        <th class="py-2 px-2">名称</th>
+                                        <th class="py-2 px-2">建仓日期/均价</th>
+                                        <th class="py-2 px-2">平仓日期/均价</th>
+                                        <th class="py-2 px-2 text-right">股数</th>
+                                        <th class="py-2 px-2 text-right">实现盈亏</th>
+                                        <th class="py-2 px-2 text-right">盈亏比</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="log in tradeLog" :key="log.buy_date + '-' + log.code" class="border-b border-[#1d212a]/50">
+                                        <td class="py-2 px-2 code-font text-gray-400">{{ log.code }}</td>
+                                        <td class="py-2 px-2 font-bold text-white">{{ log.name }}</td>
+                                        <td class="py-2 px-2 code-font">{{ log.buy_date.substring(5) }} / {{ log.buy_price.toFixed(2) }}</td>
+                                        <td class="py-2 px-2 code-font">{{ log.sell_date.substring(5) }} / {{ log.sell_price.toFixed(2) }}</td>
+                                        <td class="py-2 px-2 text-right code-font text-white">{{ log.shares }}</td>
+                                        <td class="py-2 px-2 text-right code-font font-bold" :class="log.pnl >= 0 ? 'text-red-500' : 'text-green-500'">
+                                            {{ log.pnl >= 0 ? '+' : '' }}{{ log.pnl.toFixed(0) }}
+                                        </td>
+                                        <td class="py-2 px-2 text-right code-font font-bold" :class="log.pnl >= 0 ? 'text-red-500' : 'text-green-500'">
+                                            {{ log.pnl >= 0 ? '+' : '' }}{{ log.pnl_pct.toFixed(2) }}%
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <!-- Right: Performance Stats (1/3) -->
+                    <div class="border-l border-[#1e222b] pl-6 flex flex-col justify-between gap-4">
+                        <div>
+                            <div class="border-b border-[#1e222b] pb-2 mb-4">
+                                <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">模拟持仓绩效面板</span>
+                            </div>
+                            <div class="space-y-3 mono-font text-2xs">
+                                <div class="flex justify-between items-center">
+                                    <span class="text-[#8b9bb4]">总资产 (可用+持仓)</span>
+                                    <span class="text-white font-extrabold text-sm">{{ totalEquity.toFixed(0) }} 元</span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-[#8b9bb4]">可用现金</span>
+                                    <span class="text-white font-bold">{{ cash.toFixed(0) }} 元</span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-[#8b9bb4]">持仓估算市值</span>
+                                    <span class="text-white font-bold">{{ portfolioValue.toFixed(0) }} 元</span>
+                                </div>
+                                <div class="flex justify-between items-center border-t border-[#1e222b] pt-2">
+                                    <span class="text-[#8b9bb4]">账户累计盈亏</span>
+                                    <span :class="totalPnl >= 0 ? 'text-red-500' : 'text-green-500'" class="font-extrabold">
+                                        {{ totalPnl >= 0 ? '+' : '' }}{{ totalPnl.toFixed(0) }} 元
+                                    </span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-[#8b9bb4]">账户累计收益率</span>
+                                    <span :class="totalPnl >= 0 ? 'text-red-500' : 'text-green-500'" class="font-extrabold">
+                                        {{ totalPnl >= 0 ? '+' : '' }}{{ (totalPnl / 10000).toFixed(2) }}%
+                                    </span>
+                                </div>
+                                <div class="flex justify-between items-center border-t border-[#1e222b] pt-2">
+                                    <span class="text-[#8b9bb4]">模拟交易胜率</span>
+                                    <span class="text-yellow-500 font-bold">{{ winRate.toFixed(2) }}%</span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-[#8b9bb4]">已结平仓笔数</span>
+                                    <span class="text-white font-medium">{{ tradeLog.length }} 笔</span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="flex gap-2">
+                            <button @click="resetLedger" 
+                                    class="w-full border border-gray-800 hover:border-red-500 hover:text-red-400 py-1.5 text-2xs uppercase tracking-wide font-bold transition-all text-gray-500">
+                                重置模拟账户账本
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Bottom Row: Sector Rotation & Candidate table -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <!-- Sector rotation list (1/3) -->
+                <div class="border border-[#1e222b] bg-[#0e1013] p-5 flex flex-col justify-between">
+                    <div class="border-b border-[#1e222b] pb-2 mb-4">
+                        <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">热门涨停行业板块</span>
+                    </div>
+                    <div class="space-y-2 max-h-[400px] overflow-y-auto pr-1">
+                        <div v-for="sec in currentRecap.market.sector_ranking" :key="sec.name" 
+                             class="bg-[#08090a] p-3 border border-[#1e222b] flex justify-between items-center hover:border-red-500/20 transition-colors duration-200">
+                            <div>
+                                <h4 class="text-xs font-bold text-white">{{ sec.name }}</h4>
+                                <p class="text-3xs text-gray-500 mt-0.5">领涨龙头: {{ sec.leader }}</p>
+                            </div>
+                            <div class="text-right">
+                                <span class="text-lg font-bold text-red-500 code-font">{{ sec.count }}</span>
+                                <span class="text-3xs text-[#8b9bb4] block uppercase tracking-wide">涨停数</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Candidate Pool table (2/3) -->
+                <div class="lg:col-span-2 border border-[#1e222b] bg-[#0e1013] p-5 flex flex-col justify-between">
+                    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-[#1e222b] pb-2 mb-4 gap-4">
+                        <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">首板候选股票池 (共 {{ currentRecap.candidates.length }} 只)</span>
+                        <div class="flex gap-2 w-full sm:w-auto">
+                            <input v-model="searchQuery" type="text" placeholder="输入代码/简称/行业进行过滤..."
+                                   class="bg-[#08090a] border border-[#1e222b] rounded-none px-2 py-1 text-3xs text-white placeholder-gray-600 focus:outline-none focus:border-red-500 mono-font w-full sm:w-40" aria-label="输入代码/简称/行业筛选">
+                            <select v-model="scoreFilter" class="bg-[#08090a] border border-[#1e222b] rounded-none px-2 py-1 text-3xs text-white focus:outline-none focus:border-red-500 mono-font" aria-label="选择接力指数过滤">
+                                <option value="all">全部接力指数</option>
+                                <option value="high">黄金接力 (>=100)</option>
+                                <option value="mid">强势潜力 (80-99)</option>
+                                <option value="low">弱势股 (<80)</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="overflow-x-auto max-h-[350px] overflow-y-auto pr-1">
+                        <table class="w-full text-left text-3xs border-collapse">
+                            <thead>
+                                <tr class="border-b border-[#1e222b] text-gray-500 font-bold uppercase tracking-wider bg-[#08090a]">
+                                    <th class="py-2.5 px-3">股票代码</th>
+                                    <th class="py-2.5 px-3">股票简称</th>
+                                    <th class="py-2.5 px-3 text-right">最新价</th>
+                                    <th class="py-2.5 px-3 text-right">换手率</th>
+                                    <th class="py-2.5 px-3 text-right">首次封板</th>
+                                    <th class="py-2.5 px-3 text-center">炸板</th>
+                                    <th class="py-2.5 px-3 text-right">封单资金</th>
+                                    <th class="py-2.5 px-3 text-right">封单比</th>
+                                    <th class="py-2.5 px-3 text-right">流通市值</th>
+                                    <th class="py-2.5 px-3">所属行业</th>
+                                    <th class="py-2.5 px-3">题材归因</th>
+                                    <th class="py-2.5 px-3 text-center">接力指数</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="c in filteredCandidates" :key="c.code" 
+                                    class="border-b border-[#1d212a]/50 hover:bg-[#1d212b]/20 transition-colors">
+                                    <td class="py-2 px-3 code-font text-gray-400">{{ c.code }}</td>
+                                    <td class="py-2 px-3">
+                                        <div class="flex items-center justify-between">
+                                            <span class="font-bold text-white">{{ c.name }}</span>
+                                            <button @click.stop="buyStock(c, c.price)" 
+                                                    class="bg-red-950/40 border border-red-900/50 text-red-400 hover:bg-red-900 hover:text-white px-1.5 py-0.5 text-3xs font-semibold select-none transition-all relative after:absolute after:inset-[-10px] after:content-['']">
+                                                买入
+                                            </button>
+                                        </div>
+                                    </td>
+                                    <td class="py-2 px-3 text-right code-font text-red-500 font-semibold">{{ c.price.toFixed(2) }}</td>
+                                    <td class="py-2 px-3 text-right code-font">{{ c.turnover.toFixed(2) }}%</td>
+                                    <td class="py-2 px-3 text-right code-font">{{ c.first_seal_time_formatted }}</td>
+                                    <td class="py-2 px-3 text-center code-font" 
+                                        :class="c.blown_count >= 2 ? 'text-yellow-500 font-bold' : 'text-gray-500'">
+                                        {{ c.blown_count }}
+                                    </td>
+                                    <td class="py-2 px-3 text-right code-font text-yellow-500">{{ c.seal_funds.toFixed(1) }}万</td>
+                                    <td class="py-2 px-3 text-right code-font"
+                                        :class="c.seal_ratio >= 3.0 ? 'text-red-400 font-semibold' : 'text-gray-500'">
+                                        {{ c.seal_ratio.toFixed(2) }}%
+                                    </td>
+                                    <td class="py-2 px-3 text-right code-font">{{ c.float_mcap.toFixed(1) }}亿</td>
+                                    <td class="py-2 px-3 text-gray-300">{{ c.sector }}</td>
+                                    <td class="py-2 px-3 text-gray-500 max-w-[120px] truncate" :title="c.concept">{{ c.concept || '暂无归因' }}</td>
+                                    <td class="py-2 px-3 text-center">
+                                        <span class="code-font px-2 py-0.5 text-3xs font-bold border"
+                                              :class="getScoreClass(c.score)">
+                                            {{ c.score }}
+                                        </span>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Data Import -->
+    <script src="data/recap_history.js"></script>
+
+    <script>
+        const { createApp, ref, computed, watch, onMounted, nextTick } = Vue;
+
+        createApp({
+            setup() {
+                const history = ref(window.RECAP_HISTORY || []);
+                const selectedDate = ref(history.value.length > 0 ? history.value[0].date : "");
+                const searchQuery = ref("");
+                const scoreFilter = ref("all");
+                let chartInstance = null;
+
+                // Calibration backtest data
+                const calibrationData = ref(window.RECAP_CALIBRATION || []);
+
+                // Interactive Simulator state
+                const simStockCode = ref("");
+                const simOpenType = ref("ideal");
+                const simVolType = ref("met");
+                const simTrendType = ref("breakout");
+                const simTimePhase = ref("real");
+
+                // Live Data State
+                const liveData = ref({});
+
+                // Mock ledger state (saved in LocalStorage)
+                const cash = ref(1000000);
+                const portfolio = ref([]);
+                const tradeLog = ref([]);
+                const ledgerTab = ref("portfolio");
+
+                const availableDates = computed(() => {
+                    return history.value.map(item => item.date);
+                });
+
+                const currentRecap = computed(() => {
+                    return history.value.find(item => item.date === selectedDate.value) || null;
+                });
+
+                const topCandidates = computed(() => {
+                    if (!currentRecap.value) return [];
+                    return currentRecap.value.candidates.slice(0, 5);
+                });
+
+                const needleAngle = computed(() => {
+                    if (!currentRecap.value) return 0;
+                    const s = currentRecap.value.market.sentiment;
+                    if (s === "极度活跃") return 70;
+                    if (s === "活跃") return 35;
+                    if (s === "低迷降温") return -35;
+                    if (s === "恐慌冰点") return -70;
+                    return 0; // middle
+                });
+
+                const sentimentColorClass = computed(() => {
+                    if (!currentRecap.value) return 'text-yellow-500';
+                    const s = currentRecap.value.market.sentiment;
+                    if (s === "极度活跃") return 'text-red-500';
+                    if (s === "活跃") return 'text-red-400';
+                    if (s === "低迷降温") return 'text-green-400';
+                    if (s === "恐慌冰点") return 'text-green-500';
+                    return 'text-yellow-500';
+                });
+
+                // Computed timeline phase with trading warning messages
+                const activeTimePhase = computed(() => {
+                    const phaseVal = simTimePhase.value;
+                    let hhmm = "";
+                    
+                    if (phaseVal === "real") {
+                        const now = new Date();
+                        const h = String(now.getHours()).padStart(2, '0');
+                        const m = String(now.getMinutes()).padStart(2, '0');
+                        hhmm = h + m;
+                    } else {
+                        hhmm = phaseVal;
+                    }
+                    
+                    const t = parseInt(hhmm);
+                    
+                    // Logic to determine active phase
+                    if (t < 915) {
+                        return {
+                            name: "集合竞价未开始",
+                            warning: "开盘竞价尚未开启。首板接力监控哨将于每个交易日 09:15 后正式投入监控。",
+                            dotClass: "bg-gray-600",
+                            textClass: "text-[#8b9bb4]",
+                            bgClass: "border-[#1e222b] bg-[#0e1013]"
+                        };
+                    } else if (t >= 915 && t <= 919) {
+                        return {
+                            name: "虚假申报/试盘阶段 (允许撤单)",
+                            warning: "警告：当前为主力虚假试盘时段，可任意撤单。切勿盲目挂单排队，防范主力撤单诱多骗线！",
+                            dotClass: "bg-yellow-500 animate-ping",
+                            textClass: "text-yellow-500",
+                            bgClass: "border-yellow-900 bg-yellow-950/5"
+                        };
+                    } else if (t >= 920 && t <= 924) {
+                        return {
+                            name: "真实申报阶段 (不可撤单)",
+                            warning: "警报：当前为真实资金申报阶段，不可撤单！请密切对比 09:20 瞬间个股是否发生大幅撤单降温！",
+                            dotClass: "bg-red-500 animate-pulse",
+                            textClass: "text-red-500",
+                            bgClass: "border-red-900 bg-red-950/5"
+                        };
+                    } else if (t >= 925 && t <= 929) {
+                        return {
+                            name: "集合竞价定价定格",
+                            warning: "定价已出！请立即点击刷新数据，核对实际高开价与量能目标。双达标者即为今日最强接力候选股！",
+                            dotClass: "bg-green-500 animate-pulse",
+                            textClass: "text-green-500",
+                            bgClass: "border-green-900 bg-green-950/5"
+                        };
+                    } else {
+                        return {
+                            name: "已正式开盘交易中",
+                            warning: "已开市。竞价达标个股如在开盘前15分钟分时突破开盘高点，或在冲板瞬间，为量化打板买点。",
+                            dotClass: "bg-[#3b82f6]",
+                            textClass: "text-blue-400",
+                            bgClass: "border-blue-900 bg-blue-950/5"
+                        };
+                    }
+                });
+
+                const filteredCandidates = computed(() => {
+                    if (!currentRecap.value) return [];
+                    let list = currentRecap.value.candidates;
+
+                    // Text search
+                    if (searchQuery.value) {
+                        const q = searchQuery.value.toLowerCase().trim();
+                        list = list.filter(c => 
+                            c.name.toLowerCase().includes(q) ||
+                            c.code.includes(q) ||
+                            c.sector.toLowerCase().includes(q) ||
+                            (c.concept && c.concept.toLowerCase().includes(q))
+                        );
+                    }
+
+                    // Score filter
+                    if (scoreFilter.value === "high") {
+                        list = list.filter(c => c.score >= 100);
+                    } else if (scoreFilter.value === "mid") {
+                        list = list.filter(c => c.score >= 80 && c.score < 100);
+                    } else if (scoreFilter.value === "low") {
+                        list = list.filter(c => c.score < 80);
+                    }
+
+                    return list;
+                });
+
+                const getScoreClass = (score) => {
+                    if (score >= 100) return 'bg-red-950 text-red-400 border-red-900';
+                    if (score >= 80) return 'bg-yellow-950 text-yellow-400 border-yellow-900';
+                    return 'bg-gray-900 text-gray-500 border-gray-800';
+                };
+
+                // Simulator Logic
+                const simResult = computed(() => {
+                    if (!currentRecap.value || !simStockCode.value) {
+                        return { decision: "等待数据", badge: "等待", color: "text-gray-500", border: "border-gray-800 text-gray-500", reason: "请选择一个目标股进行判定。" };
+                    }
+                    const c = currentRecap.value.candidates.find(item => item.code === simStockCode.value);
+                    if (!c) {
+                        return { decision: "等待数据", badge: "等待", color: "text-gray-500", border: "border-gray-800 text-gray-500", reason: "标的未找到。" };
+                    }
+                    
+                    const open = simOpenType.value;
+                    const vol = simVolType.value;
+                    const trend = simTrendType.value;
+                    
+                    if (trend === "weak") {
+                        return {
+                            decision: "放弃操作 / 观望",
+                            badge: "观望",
+                            color: "text-gray-400",
+                            border: "border-gray-700 text-gray-400",
+                            reason: "【开盘承接走弱】开盘后无量下探且跌破分时均线，买盘无力，套牢盘抛压沉重。即使竞价表现尚可，开盘走弱说明资金不合力，应坚决放弃，避免吃面。"
+                        };
+                    }
+                    
+                    if (open === "fever") {
+                        if (trend === "limit_up") {
+                            return {
+                                decision: "打板排单 (极轻仓)",
+                                badge: "高风险买",
+                                color: "text-yellow-500",
+                                border: "border-yellow-900 text-yellow-500",
+                                reason: "【超高开秒板】竞价高开超 6% 甚至接近涨停，且开盘直接封死。接力极易遭遇“高开低走”炸板。仅在竞价爆量且所属板块呈现集群涨停时，可极轻仓排单打板，一般不建议参与。"
+                            };
+                        } else {
+                            return {
+                                decision: "放弃操作 / 避雷",
+                                badge: "避雷",
+                                color: "text-green-500",
+                                border: "border-green-800 text-green-500",
+                                reason: "【高烧防闷杀】高开超 6% 以上开盘，如果没有秒板，极易演变为日内获利砸盘高开低走。若无秒板支撑，强烈建议放弃，观望为主。"
+                            };
+                        }
+                    }
+                    
+                    if (open === "ideal") {
+                        if (vol === "met") {
+                            if (trend === "breakout") {
+                                return {
+                                    decision: "理想买点 (半路/加仓)",
+                                    badge: "黄金买点",
+                                    color: "text-red-500",
+                                    border: "border-red-900 text-red-500",
+                                    reason: "【分歧换手突破】竞价放量达标且开在理想区间（2%~5%），开盘回调不破均线（或前日收盘价），放量拉升突破开盘高点瞬间是极佳的“半路买点”，晋级概率极高。"
+                                };
+                            } else if (trend === "limit_up") {
+                                return {
+                                    decision: "强力打板 (确认点)",
+                                    badge: "强力买点",
+                                    color: "text-red-500",
+                                    border: "border-red-900 text-red-500",
+                                    reason: "【强势秒板确认】竞价放量且承接强，开盘直线拉升扫板。建议在封死二板瞬间打板买入，买入资金有板块溢价保护，属于连板选手的核心操作。"
+                                };
+                            }
+                        } else {
+                            if (trend === "breakout") {
+                                return {
+                                    decision: "轻仓试探",
+                                    badge: "温和买点",
+                                    color: "text-yellow-500",
+                                    border: "border-yellow-900 text-yellow-500",
+                                    reason: "【缩量高开换手】竞价成交量偏小，说明主力资金竞价抢筹意愿一般。若开盘后能放量突破，说明日内承接转强，可轻仓半路试探，最好等待封板瞬间打板确认。"
+                                };
+                            }
+                        }
+                    }
+                    
+                    if (open === "low") {
+                        if (trend === "low_bounce" && vol === "met") {
+                            return {
+                                decision: "弱转强突破打板",
+                                badge: "反包买点",
+                                color: "text-red-400",
+                                border: "border-red-900 text-red-400",
+                                reason: "【经典弱转强】昨日板较烂，今天平开或低开，但竞价量能爆量达标（反包蓄势），开盘强力拉升翻红并突破昨日收盘价。这是经典的“弱转强”买点，可于股价翻红放量上攻时介入，或封板瞬间打板。"
+                            };
+                        } else {
+                            return {
+                                decision: "放弃操作",
+                                badge: "放弃",
+                                color: "text-gray-500",
+                                border: "border-gray-800 text-gray-500",
+                                reason: "【低开低走走弱】平开或低开且没有放量翻红，资金承接极差，昨日进场资金在疯狂砸盘出逃，直接排除该股接力可能。"
+                            };
+                        }
+                    }
+                    
+                    return {
+                        decision: "轻仓观察",
+                        badge: "观察",
+                        color: "text-yellow-500",
+                        border: "border-yellow-900 text-yellow-500",
+                        reason: "【温和状态】明日表现中规中矩，无明显超预期放量也无大幅杀跌。建议仅做仓位试探，或者等午后充分换手封板时再做决策。"
+                    };
+                });
+
+                // Helper to initialize selected stock code in simulator
+                const initSimStock = () => {
+                    if (topCandidates.value.length > 0) {
+                        simStockCode.value = topCandidates.value[0].code;
+                    }
+                };
+
+                // Real-time Tencent quote integration
+                const getPrefix = (code) => {
+                    if (code.startsWith("6") || code.startsWith("9")) return "sh";
+                    if (code.startsWith("8")) return "bj";
+                    return "sz";
+                };
+
+                const fetchLiveQuotes = () => {
+                    if (topCandidates.value.length === 0) return;
+                    
+                    const prefixedCodes = topCandidates.value.map(c => getPrefix(c.code) + c.code);
+                    const url = "https://qt.gtimg.cn/q=" + prefixedCodes.join(",");
+                    
+                    // Remove old script if exists
+                    const oldScript = document.getElementById("tencent-quotes-script");
+                    if (oldScript) oldScript.remove();
+                    
+                    const script = document.createElement("script");
+                    script.id = "tencent-quotes-script";
+                    script.src = url;
+                    script.onload = () => {
+                        const updatedData = { ...liveData.value };
+                        topCandidates.value.forEach(c => {
+                            const varName = "v_" + getPrefix(c.code) + c.code;
+                            if (window[varName]) {
+                                const vals = window[varName].split("~");
+                                if (vals.length >= 38) {
+                                    const price = parseFloat(vals[3]);
+                                    const change = parseFloat(vals[32]);
+                                    const amountWan = parseFloat(vals[37]);
+                                    
+                                    updatedData[c.code] = {
+                                        price: price,
+                                        change: change,
+                                        turnover: amountWan
+                                    };
+                                }
+                            }
+                        });
+                        liveData.value = updatedData;
+                        alert("今日实时竞价数据刷新成功！已经与量化标准自动对齐。");
+                        fillSimulatorFromLive();
+                    };
+                    script.onerror = () => {
+                        alert("获取腾讯财经数据失败，请确认当前是否为交易时间（09:15后可用）。");
+                    };
+                    document.head.appendChild(script);
+                };
+
+                const isVolMet = (c) => {
+                    if (!liveData.value[c.code]) return false;
+                    const targetVol = c.float_mcap * c.turnover * 10;
+                    return liveData.value[c.code].turnover >= targetVol;
+                };
+
+                const isSignalMet = (c) => {
+                    if (!liveData.value[c.code]) return false;
+                    const change = liveData.value[c.code].change;
+                    const volMet = isVolMet(c);
+                    return change >= 2.0 && change <= 5.0 && volMet;
+                };
+
+                const fillSimulatorFromLive = () => {
+                    if (!simStockCode.value || !liveData.value[simStockCode.value]) return;
+                    const data = liveData.value[simStockCode.value];
+                    const change = data.change;
+                    
+                    if (change >= 6.0) {
+                        simOpenType.value = "fever";
+                    } else if (change >= 2.0 && change <= 5.0) {
+                        simOpenType.value = "ideal";
+                    } else if (change >= 0.0 && change < 2.0) {
+                        simOpenType.value = "mild";
+                    } else {
+                        simOpenType.value = "low";
+                    }
+                    
+                    const c = topCandidates.value.find(item => item.code === simStockCode.value);
+                    if (c) {
+                        const targetVol = c.float_mcap * c.turnover * 10;
+                        simVolType.value = (data.turnover >= targetVol) ? "met" : "not_met";
+                    }
+                };
+
+                // LocalStorage Ledger Functions
+                const loadLedger = () => {
+                    const storedCash = localStorage.getItem("rtk_recap_cash");
+                    const storedPortfolio = localStorage.getItem("rtk_recap_portfolio");
+                    const storedLog = localStorage.getItem("rtk_recap_log");
+                    
+                    if (storedCash !== null) cash.value = parseFloat(storedCash);
+                    if (storedPortfolio !== null) portfolio.value = JSON.parse(storedPortfolio);
+                    if (storedLog !== null) tradeLog.value = JSON.parse(storedLog);
+                };
+
+                const saveLedger = () => {
+                    localStorage.setItem("rtk_recap_cash", cash.value);
+                    localStorage.setItem("rtk_recap_portfolio", JSON.stringify(portfolio.value));
+                    localStorage.setItem("rtk_recap_log", JSON.stringify(tradeLog.value));
+                };
+
+                const buyStock = (stock, price) => {
+                    if (portfolio.value.some(item => item.code === stock.code)) {
+                        alert("持仓中已存在该股，请先平仓或进行单笔交易。");
+                        return;
+                    }
+                    
+                    const posSize = 200000;
+                    const actualCost = Math.min(posSize, cash.value);
+                    if (actualCost <= 0) {
+                        alert("可用资金不足，无法建仓。");
+                        return;
+                    }
+                    
+                    const shares = Math.floor(actualCost / price / 100) * 100;
+                    if (shares <= 0) {
+                        alert("可用资金不足以买入一手（100股）。");
+                        return;
+                    }
+                    
+                    const totalCost = shares * price;
+                    cash.value -= totalCost;
+                    
+                    portfolio.value.push({
+                        code: stock.code,
+                        name: stock.name,
+                        buy_date: selectedDate.value,
+                        buy_price: price,
+                        shares: shares,
+                        sector: stock.sector
+                    });
+                    
+                    saveLedger();
+                    alert(`虚拟建仓成功！以 ${price.toFixed(2)}元 买入 ${stock.name} ${shares}股，总计金额 ${totalCost.toFixed(0)}元。`);
+                };
+
+                const triggerSell = (holding) => {
+                    const price = getValuationPrice(holding.code, holding.buy_price);
+                    if (confirm(`确认以今日收盘估值 ${price.toFixed(2)}元 进行虚拟平仓吗？`)) {
+                        sellStock(holding.code, price);
+                    }
+                };
+
+                const sellStock = (code, price) => {
+                    const idx = portfolio.value.findIndex(item => item.code === code);
+                    if (idx === -1) return;
+                    
+                    const item = portfolio.value[idx];
+                    const revenue = item.shares * price;
+                    cash.value += revenue;
+                    
+                    const pnl = revenue - (item.shares * item.buy_price);
+                    const pnl_pct = (pnl / (item.shares * item.buy_price)) * 100;
+                    
+                    tradeLog.value.push({
+                        code: item.code,
+                        name: item.name,
+                        buy_date: item.buy_date,
+                        buy_price: item.buy_price,
+                        sell_date: selectedDate.value,
+                        sell_price: price,
+                        shares: item.shares,
+                        pnl: pnl,
+                        pnl_pct: pnl_pct
+                    });
+                    
+                    portfolio.value.splice(idx, 1);
+                    saveLedger();
+                };
+
+                const getValuationPrice = (code, buyPrice) => {
+                    if (!currentRecap.value) return buyPrice;
+                    const c = currentRecap.value.candidates.find(item => item.code === code);
+                    if (c) return c.price;
+                    return buyPrice;
+                };
+
+                const getFloatingPnl = (holding) => {
+                    const price = getValuationPrice(holding.code, holding.buy_price);
+                    return holding.shares * (price - holding.buy_price);
+                };
+
+                const getFloatingPnlPct = (holding) => {
+                    const price = getValuationPrice(holding.code, holding.buy_price);
+                    return ((price - holding.buy_price) / holding.buy_price) * 100;
+                };
+
+                const getPnlColor = (holding) => {
+                    const pnl = getFloatingPnl(holding);
+                    return pnl >= 0 ? 'text-red-500' : 'text-green-500';
+                };
+
+                const getExitAdvice = (holding) => {
+                    if (!currentRecap.value) return { text: "监控中", color: "border-gray-800 text-gray-500" };
+                    const isZt = currentRecap.value.candidates.some(item => item.code === holding.code);
+                    if (holding.buy_date === selectedDate.value) {
+                        return { text: "今日建仓 / 持股中", color: "border-yellow-500/20 text-yellow-500 bg-yellow-500/5" };
+                    }
+                    if (isZt) {
+                        return { text: "连板晋级 / 建议持有", color: "border-red-500/20 text-red-400 bg-red-950/20" };
+                    } else {
+                        return { text: "断板走弱 / 建议平仓", color: "border-green-500/20 text-green-400 bg-green-950/20" };
+                    }
+                };
+
+                const resetLedger = () => {
+                    if (confirm("确认清空模拟交易账本吗？所有持仓与历史记录将被重置。")) {
+                        cash.value = 1000000;
+                        portfolio.value = [];
+                        tradeLog.value = [];
+                        saveLedger();
+                    }
+                };
+
+                // Computed metrics
+                const portfolioValue = computed(() => {
+                    return portfolio.value.reduce((sum, item) => {
+                        return sum + item.shares * getValuationPrice(item.code, item.buy_price);
+                    }, 0);
+                });
+
+                const totalEquity = computed(() => {
+                    return cash.value + portfolioValue.value;
+                });
+
+                const totalPnl = computed(() => {
+                    return totalEquity.value - 1000000;
+                });
+
+                const winRate = computed(() => {
+                    if (tradeLog.value.length === 0) return 0.0;
+                    const wins = tradeLog.value.filter(item => item.pnl > 0).length;
+                    return (wins / tradeLog.value.length) * 100;
+                });
+
+                const initChart = () => {
+                    const ctx = document.getElementById('trendChart');
+                    if (!ctx) return;
+
+                    // Get last 15 elements in chronological order (oldest to newest)
+                    const last15 = [...history.value].slice(0, 15).reverse();
+                    
+                    const labels = last15.map(item => item.date.substring(5)); // just MM-DD
+                    const rates = last15.map(item => item.market.promotion_rate);
+                    const luCounts = last15.map(item => item.market.limit_ups);
+
+                    if (chartInstance) {
+                        chartInstance.data.labels = labels;
+                        chartInstance.data.datasets[0].data = rates;
+                        chartInstance.data.datasets[1].data = luCounts;
+                        chartInstance.update();
+                    } else {
+                        chartInstance = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [
+                                {
+                                    label: '1进2晋级率 (%)',
+                                    data: rates,
+                                    borderColor: '#ef4444',
+                                    backgroundColor: 'rgba(239, 68, 68, 0.05)',
+                                    borderWidth: 1.5,
+                                    pointRadius: 2,
+                                    tension: 0.2,
+                                    yAxisID: 'y1',
+                                },
+                                {
+                                    label: '总涨停数',
+                                    data: luCounts,
+                                    borderColor: '#eab308',
+                                    backgroundColor: 'transparent',
+                                    borderWidth: 1,
+                                    borderDash: [3, 3],
+                                    pointRadius: 0,
+                                    tension: 0.2,
+                                    yAxisID: 'y2',
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    labels: {
+                                        color: '#8b9bb4',
+                                        boxWidth: 12,
+                                        font: { size: 9, family: 'Fira Code' }
+                                    }
+                                }
+                            },
+                            scales: {
+                                x: {
+                                    grid: { color: '#1e222b' },
+                                    ticks: { color: '#8b9bb4', font: { size: 8, family: 'Fira Code' } }
+                                },
+                                y1: {
+                                    type: 'linear',
+                                    position: 'left',
+                                    grid: { color: '#1e222b' },
+                                    ticks: { 
+                                        color: '#ef4444', 
+                                        font: { size: 8, family: 'Fira Code' },
+                                        callback: (value) => value + '%'
+                                    },
+                                    min: 0,
+                                    max: Math.max(...rates, 20) + 5
+                                },
+                                y2: {
+                                    type: 'linear',
+                                    position: 'right',
+                                    grid: { drawOnChartArea: false },
+                                    ticks: { color: '#eab308', font: { size: 8, family: 'Fira Code' } },
+                                    min: 0
+                                }
+                            }
+                        }
+                    });
+                    }
+                };
+
+                watch(selectedDate, () => {
+                    nextTick(() => {
+                        lucide.createIcons();
+                        initSimStock();
+                    });
+                });
+
+                watch(simStockCode, () => {
+                    fillSimulatorFromLive();
+                });
+
+                onMounted(() => {
+                    loadLedger();
+                    lucide.createIcons();
+                    initChart();
+                    initSimStock();
+                });
+
+                return {
+                    history,
+                    selectedDate,
+                    availableDates,
+                    currentRecap,
+                    topCandidates,
+                    needleAngle,
+                    sentimentColorClass,
+                    searchQuery,
+                    scoreFilter,
+                    filteredCandidates,
+                    getScoreClass,
+                    calibrationData,
+                    simStockCode,
+                    simOpenType,
+                    simVolType,
+                    simTrendType,
+                    simResult,
+                    simTimePhase,
+                    activeTimePhase,
+                    liveData,
+                    fetchLiveQuotes,
+                    isVolMet,
+                    isSignalMet,
+                    cash,
+                    portfolio,
+                    tradeLog,
+                    ledgerTab,
+                    buyStock,
+                    triggerSell,
+                    sellStock,
+                    getValuationPrice,
+                    getFloatingPnl,
+                    getFloatingPnlPct,
+                    getPnlColor,
+                    getExitAdvice,
+                    resetLedger,
+                    portfolioValue,
+                    totalEquity,
+                    totalPnl,
+                    winRate
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
+"""
+    with open(HTML_PATH, "w", encoding="utf-8") as f:
+        f.write(html_content)
+    print(f"HTML generated at {HTML_PATH}")
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="A-share daily post-market recap engine")
+    parser.add_argument("--date", type=str, help="Specify date in YYYY-MM-DD format (default is today)")
+    parser.add_argument("--backfill", type=int, help="Backfill N trading days from history")
+    args = parser.parse_args()
+    
+    init_db()
+    
+    # master trading calendar from mootdx index (last 200 days)
+    print("Loading trade dates from mootdx index calendar...")
+    trade_dates = get_trading_days(offset=200)
+    print(f"Index calendar loaded. Last trading day in calendar: {trade_dates[-1]}")
+    
+    if args.backfill:
+        # Get the last N days before today
+        n_days = args.backfill
+        # Find index of the latest day in trade_dates
+        latest_day = datetime.now().strftime('%Y-%m-%d')
+        # Filter trade_dates for only past and present days
+        valid_dates = [d for d in trade_dates if d <= latest_day]
+        backfill_dates = valid_dates[-n_days:]
+        
+        print(f"Backfilling {len(backfill_dates)} trading days: {backfill_dates}")
+        for date_str in backfill_dates:
+            try:
+                run_recap(date_str, trade_dates)
+            except Exception as e:
+                print(f"Error running backfill for {date_str}: {e}")
+                
+        export_data()
+        generate_html()
+        
+    else:
+        # Default to today
+        if args.date:
+            date_str = args.date
+        else:
+            date_str = datetime.now().strftime('%Y-%m-%d')
+            
+        if date_str not in trade_dates:
+            # If date_str is not a trading day in the index calendar, warning but let it run
+            print(f"Warning: {date_str} is not classified as a trading day in index calendar.")
+            
+        success = run_recap(date_str, trade_dates)
+        if success:
+            export_data()
+            generate_html()
+
+if __name__ == "__main__":
+    main()
