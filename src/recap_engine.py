@@ -14,6 +14,8 @@ import shutil
 import re
 from pathlib import Path
 
+from render_fragments import render_theme_runtime, render_vendor_head
+
 # Base Paths
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DB_DIR = os.path.join(BASE_DIR, "data")
@@ -1174,14 +1176,7 @@ def generate_html():
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>A股 1进2 接力复盘控制台</title>
-    <!-- Local vendor assets for offline-friendly rendering -->
-    <script src="assets/vendor/tailwind.min.js"></script>
-    <!-- Vue 3 -->
-    <script src="assets/vendor/vue.global.js"></script>
-    <!-- Chart.js -->
-    <script src="assets/vendor/chart.umd.min.js"></script>
-    <!-- Lucide Icons -->
-    <script src="assets/vendor/lucide.min.js"></script>
+    __VENDOR_HEAD__
     <!-- Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;700&family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
@@ -2320,59 +2315,7 @@ def generate_html():
                 });
 
                 
-                const themeMediaQuery = window.matchMedia("(prefers-color-scheme: light)");
-                const themeStorageKey = "rtk_recap_theme";
-                const prefersLight = ref(themeMediaQuery.matches);
-                const themeMode = ref("system");
-                const resolvedTheme = computed(() => {
-                    if (themeMode.value === "light" || themeMode.value === "dark") {
-                        return themeMode.value;
-                    }
-                    return prefersLight.value ? "light" : "dark";
-                });
-                const loadTheme = () => {
-                    try {
-                        const storedTheme = localStorage.getItem(themeStorageKey);
-                        if (storedTheme === "system" || storedTheme === "light" || storedTheme === "dark") {
-                            themeMode.value = storedTheme;
-                        }
-                    } catch (error) {}
-                };
-                const saveTheme = () => {
-                    try {
-                        localStorage.setItem(themeStorageKey, themeMode.value);
-                    } catch (error) {}
-                };
-                const applyTheme = () => {
-                    const theme = resolvedTheme.value;
-                    document.body.dataset.theme = theme;
-                    document.documentElement.dataset.theme = theme;
-                    document.body.dataset.themeMode = themeMode.value;
-                    document.documentElement.dataset.themeMode = themeMode.value;
-                };
-                const syncSystemTheme = (event) => {
-                    prefersLight.value = event.matches;
-                };
-                const getChartTheme = () => {
-                    if (resolvedTheme.value === "light") {
-                        return {
-                            grid: "rgba(148, 163, 184, 0.18)",
-                            axis: "#64748b",
-                            promo: "#e11d48",
-                            promoFill: "rgba(225, 29, 72, 0.06)",
-                            limit: "#d97706"
-                        };
-                    }
-                    return {
-                        grid: "rgba(255, 255, 255, 0.05)",
-                        axis: "#8b9bb4",
-                        promo: "#f43f5e",
-                        promoFill: "rgba(244, 63, 94, 0.03)",
-                        limit: "#f59e0b"
-                    };
-                };
-                loadTheme();
-                applyTheme();
+                __THEME_RUNTIME__
 
                 const needleAngle = computed(() => {
                     if (!currentRecap.value) return 0;
@@ -3014,6 +2957,8 @@ def generate_html():
     </script>
 </body>
 </html>"""
+    html_content = html_content.replace("__VENDOR_HEAD__", render_vendor_head()).replace("__THEME_RUNTIME__", render_theme_runtime())
+
     with open(HTML_PATH, "w", encoding="utf-8") as f:
         f.write(html_content)
     print(f"HTML generated at {HTML_PATH}")
