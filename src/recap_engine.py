@@ -84,6 +84,22 @@ def init_db():
     # 3. Limit-Ups Archive Table (V2.1 for Backtest Calibration)
     cursor.execute("CREATE TABLE IF NOT EXISTS limit_ups_archive (date TEXT, code TEXT, name TEXT, consecutive_boards INTEGER, PRIMARY KEY (date, code))")
     
+    # 4. Uzi Audit Table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS uzi_audit (
+            date TEXT,
+            code TEXT,
+            name TEXT,
+            average_score REAL,
+            val_vote TEXT,
+            mom_vote TEXT,
+            risk_level TEXT,
+            summary TEXT,
+            report_path TEXT,
+            PRIMARY KEY (date, code)
+        )
+    """)
+    
     conn.commit()
     conn.close()
 def get_trading_days(offset=60):
