@@ -437,6 +437,67 @@
                 </div>
             </div>
 
+            <!-- UZI 智能评委席报告 -->
+            <div class="border border-[#1e222b] bg-[#0e1013] p-5">
+                <div class="border-b border-[#1e222b] pb-2 mb-4 flex justify-between items-center">
+                    <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">UZI 智能评委席报告 / JURY AUDIT REPORT</span>
+                    <div class="flex items-center gap-2">
+                        <span class="text-3xs px-2 py-0.5 border"
+                              :class="isUziOnline ? 'border-green-900 bg-green-950/20 text-green-400' : 'border-yellow-900 bg-yellow-950/20 text-yellow-400'">
+                            {{ isUziOnline ? '大模型智能评审模式' : '本地财务规则模拟' }}
+                        </span>
+                        <span class="text-2xs text-[#ef4444] font-bold uppercase tracking-wider mono-font">JURY AUDIT PANEL</span>
+                    </div>
+                </div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
+                    <div v-for="u in currentUziAudit" :key="u.code" 
+                         class="bg-[#08090a] p-4 border border-[#1e222b] flex flex-col justify-between gap-4">
+                        <div>
+                            <div class="flex justify-between items-start border-b border-[#1e222b]/80 pb-2">
+                                <div>
+                                    <h4 class="text-sm font-bold text-white">{{ u.name }}</h4>
+                                    <p class="text-3xs text-gray-500 mono-font mt-0.5">{{ u.code }}</p>
+                                </div>
+                                <span class="text-lg font-bold text-red-500 code-font">{{ u.average_score.toFixed(1) }}分</span>
+                            </div>
+                            
+                            <div class="mt-3 space-y-1.5 text-3xs">
+                                <div class="flex justify-between items-center">
+                                    <span class="text-gray-500">巴菲特 (价值流派)</span>
+                                    <span :class="u.val_vote === '多头' ? 'text-red-500' : (u.val_vote === '空头' ? 'text-green-500' : 'text-gray-500')" class="font-bold">
+                                        {{ u.val_vote }}
+                                    </span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-gray-500">赵老哥 (游资接力)</span>
+                                    <span :class="u.mom_vote === '多头' ? 'text-red-500' : (u.mom_vote === '空头' ? 'text-green-500' : 'text-gray-500')" class="font-bold">
+                                        {{ u.mom_vote }}
+                                    </span>
+                                </div>
+                                <div class="flex justify-between items-center border-t border-[#1e222b]/60 pt-1.5 mt-1.5">
+                                    <span class="text-gray-500">大空头 (排雷评级)</span>
+                                    <span :class="u.risk_level === '安全' ? 'text-green-400' : 'text-red-400'" class="font-bold">
+                                        {{ u.risk_level }}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="text-3xs text-gray-400 bg-[#0e1013] p-2 border border-[#1e222b] leading-relaxed font-mono select-all">
+                            {{ u.summary }}
+                        </div>
+                        
+                        <div v-if="u.report_path" class="mt-1">
+                            <a :href="u.report_path" target="_blank"
+                               class="block w-full text-center bg-red-950 border border-red-900 text-red-400 hover:bg-red-900 hover:text-white py-1 text-3xs font-bold transition-all font-mono">
+                                查看 UZI 深度诊断报告
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- 模拟实战交易账本 -->
             <div class="border border-[#1e222b] bg-[#0e1013] p-5">
                 <div class="border-b border-[#1e222b] pb-2 mb-4 flex justify-between items-center">
@@ -721,6 +782,17 @@
 
                 // Calibration backtest data
                 const calibrationData = ref(window.RECAP_CALIBRATION || []);
+
+                // UZI Audit Data
+                const uziAuditData = ref(window.RECAP_UZI_AUDIT || []);
+                
+                const currentUziAudit = computed(() => {
+                    return uziAuditData.value.filter(item => item.date === selectedDate.value);
+                });
+                
+                const isUziOnline = computed(() => {
+                    return currentUziAudit.value.some(item => item.report_path !== "");
+                });
 
                 // Interactive Simulator state
                 const simStockCode = ref("");
@@ -1329,6 +1401,9 @@
                     filteredCandidates,
                     getScoreClass,
                     calibrationData,
+                    uziAuditData,
+                    currentUziAudit,
+                    isUziOnline,
                     simStockCode,
                     simOpenType,
                     simVolType,

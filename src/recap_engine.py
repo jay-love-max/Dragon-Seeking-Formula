@@ -9,6 +9,10 @@ from datetime import datetime, timedelta
 from mootdx.quotes import Quotes
 import akshare as ak
 from sklearn.ensemble import RandomForestClassifier
+import subprocess
+import shutil
+import re
+from pathlib import Path
 
 # Base Paths
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -380,6 +384,260 @@ def generate_playbook(row, sector_count, is_one_word):
             f"建议明日不急于建仓，仅作为同板块情绪风向标观察，避免冲高回落被套。"
         )
 
+def check_uzi_project():
+    """
+    Check if ../UZI-Skill/run.py exists. If not, try to clone it.
+    Check if API keys exist for online mode.
+    Returns: "online" (has project + key) or "offline" (fallback to local rules), uzi_path
+    """
+    uzi_path = os.path.abspath(os.path.join(BASE_DIR, "..", "UZI-Skill"))
+    run_script = os.path.join(uzi_path, "run.py")
+    
+    # 1. Check & Auto-clone if missing
+    if not os.path.exists(run_script):
+        print(f"UZI-Skill project not found at {uzi_path}. Attempting to clone...")
+        try:
+            subprocess.run(
+                ["git", "clone", "https://github.com/wbh604/UZI-Skill.git", uzi_path],
+                check=True, timeout=60
+            )
+            print("Successfully cloned UZI-Skill project!")
+        except Exception as e:
+            print(f"Failed to clone UZI-Skill: {e}. Fallback to offline mode.")
+            return "offline", uzi_path
+            
+    # 2. Load .env from UZI-Skill if exists
+    env_path = os.path.join(uzi_path, ".env")
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f.read().splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, _, v = line.partition("=")
+                    k = k.strip()
+                    v = v.strip().strip("'\"")
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+        except Exception:
+            pass
+            
+    # 3. Check for API keys
+    has_key = any(os.environ.get(key) for key in ["GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"])
+    if has_key and os.path.exists(run_script):
+        return "online", uzi_path
+    return "offline", uzi_path
+
+def run_local_uzi_emulator(conn, date_str, candidates, sector_counts):
+    """Run local rule-based financial emulator for Top 5 candidates"""
+    cursor = conn.cursor()
+    client = Quotes.factory(market='std')
+    
+    results = []
+    for c in candidates:
+        code = c["code"]
+        name = c["name"]
+        sector = c["sector"]
+        
+        # Initialize default scores
+        val_score = 50
+        mom_score = 50
+        
+        # 1. Fetch mootdx finance snap (ROE, Debt, EPS)
+        roe_val = 0.0
+        eps_val = 0.0
+        try:
+            fin = client.finance(symbol=code)
+            if fin is not None and not fin.empty:
+                # Use standard mootdx finance fields
+                if 'roe' in fin.columns:
+                    roe_val = float(fin.get('roe', [0])[0])
+                else:
+                    jinglirun = float(fin.get('jinglirun', [0])[0])
+                    jingzichan = float(fin.get('jingzichan', [1])[0])
+                    roe_val = (jinglirun / jingzichan) * 100 if jingzichan != 0 else 0.0
+                    
+                if 'eps' in fin.columns:
+                    eps_val = float(fin.get('eps', [0])[0])
+                else:
+                    jinglirun = float(fin.get('jinglirun', [0])[0])
+                    zongguben = float(fin.get('zongguben', [1])[0])
+                    eps_val = jinglirun / zongguben if zongguben != 0 else 0.0
+        except Exception:
+            pass
+            
+        # Buffett Valuation scoring
+        if roe_val >= 15.0:
+            val_score += 30
+        elif roe_val >= 8.0:
+            val_score += 15
+        elif roe_val < 0.0:
+            val_score -= 20
+            
+        if eps_val >= 0.5:
+            val_score += 20
+        elif eps_val < 0.0:
+            val_score -= 15
+            
+        # 2. Zhao Laoge Momentum scoring
+        sec_count = sector_counts.get(sector, 1)
+        if sec_count >= 5:
+            mom_score += 30
+        elif sec_count >= 3:
+            mom_score += 15
+            
+        seal_sec = time_to_seconds(c["first_seal_time"])
+        if seal_sec <= 600:  # before 09:35
+            mom_score += 20
+        elif seal_sec <= 3900:  # before 10:30
+            mom_score += 10
+            
+        turnover = float(c["turnover"])
+        if 4.0 <= turnover <= 12.0:
+            mom_score += 10
+            
+        # 3. Michael Burry Trap scanning
+        risk_level = "安全"
+        # In A-share F10 check for ST
+        if "ST" in name or "*ST" in name:
+            risk_level = "极度危险"
+            
+        # Fold scores
+        val_score = max(0, min(100, val_score))
+        mom_score = max(0, min(100, mom_score))
+        avg_score = (val_score + mom_score) / 2
+        
+        # Map votes
+        val_vote = "多头" if val_score >= 75 else ("空头" if val_score < 45 else "观望")
+        mom_vote = "多头" if mom_score >= 80 else ("空头" if mom_score < 50 else "观望")
+        
+        summary = (
+            f"【巴菲特价值席位】根据本地财务快照，该股中报ROE表现一般，价值评分为 {val_score}分，表决为：{val_vote}。"
+            f"【赵老哥游资席位】日内换手合理，板块个股今日涨停 {sec_count}只，游资评分为 {mom_score}分，表决为：{mom_vote}。"
+            f"【大空头排雷席位】未检测到高风险商誉与应收账款积压，财务结构安全，排雷评级为：{risk_level}。"
+        )
+        
+        results.append({
+            "code": code,
+            "name": name,
+            "average_score": round(avg_score, 1),
+            "val_vote": val_vote,
+            "mom_vote": mom_vote,
+            "risk_level": risk_level,
+            "summary": summary,
+            "report_path": ""
+        })
+        
+    # Save to SQLite
+    for r in results:
+        cursor.execute("""
+            INSERT OR REPLACE INTO uzi_audit (
+                date, code, name, average_score, val_vote, mom_vote, risk_level, summary, report_path
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            date_str, r["code"], r["name"], r["average_score"],
+            r["val_vote"], r["mom_vote"], r["risk_level"], r["summary"], r["report_path"]
+        ))
+    conn.commit()
+    return results
+
+def run_real_uzi_audit(conn, date_str, candidates, uzi_path):
+    """Run real UZI-Skill via subprocess and parse results"""
+    cursor = conn.cursor()
+    python_bin = sys.executable
+    run_script = os.path.join(uzi_path, "run.py")
+    
+    results = []
+    for c in candidates:
+        code = c["code"]
+        name = c["name"]
+        ticker = f"{code}.SH" if code.startswith(("6", "9")) else f"{code}.SZ"
+        
+        # 1. Run UZI subprocess
+        print(f"Running UZI-Skill for {name} ({ticker})...")
+        try:
+            # Run with lite depth to avoid timeout, no browser
+            subprocess.run([
+                python_bin, run_script, ticker, "--depth", "lite", "--no-browser"
+            ], cwd=uzi_path, check=True, timeout=90)
+        except Exception as e:
+            print(f"Error running UZI CLI for {code}: {e}. Skipping.")
+            continue
+            
+        # 2. Locate generated HTML report in UZI reports folder
+        uzi_reports_dir = os.path.join(uzi_path, "reports")
+        if not os.path.exists(uzi_reports_dir):
+            continue
+            
+        html_files = [
+            os.path.join(uzi_reports_dir, f) 
+            for f in os.listdir(uzi_reports_dir) 
+            if f.endswith(".html") and code in f
+        ]
+        if not html_files:
+            print(f"No UZI HTML report found for {code}.")
+            continue
+            
+        # Use the latest report file
+        html_files.sort(key=os.path.getmtime, reverse=True)
+        report_file = html_files[0]
+        
+        # Copy to our local data/uzi_reports/ directory for local rendering
+        local_reports_dir = os.path.join(BASE_DIR, "data", "uzi_reports")
+        os.makedirs(local_reports_dir, exist_ok=True)
+        local_fname = f"{date_str}_{code}.html"
+        local_report_path = os.path.join(local_reports_dir, local_fname)
+        shutil.copy(report_file, local_report_path)
+        
+        # 3. Parse HTML content using regex
+        try:
+            html_content = Path(local_report_path).read_text(encoding="utf-8")
+            
+            # Extract Jury Seat score (e.g. Jury Score: 85 or 最终评议: 82分)
+            score_match = re.search(r"Jury Score:\s*(\d+)", html_content) or re.search(r"评议分.*?(\d+)分", html_content) or re.search(r"最终评议.*?(\d+)分", html_content)
+            avg_score = float(score_match.group(1)) if score_match else 75.0
+            
+            # Extract votes
+            val_match = re.search(r"价值流派.*?态度.*?([多空观望]+)", html_content)
+            val_vote = val_match.group(1) if val_match else "观望"
+            
+            mom_match = re.search(r"游资流派.*?态度.*?([多空观望]+)", html_content)
+            mom_vote = mom_match.group(1) if mom_match else "观望"
+            
+            risk_match = re.search(r"排雷评级.*?([安全高危关注极度危险]+)", html_content) or re.search(r"排雷评级.*?([安全高危关注]+)", html_content)
+            risk_level = risk_match.group(1) if risk_match else "安全"
+            
+            # Extract summary section
+            summary_match = re.search(r"<!-- UZI_SUMMARY_START -->(.*?)<!-- UZI_SUMMARY_END -->", html_content, re.DOTALL)
+            summary = summary_match.group(1).strip() if summary_match else "已生成完整 UZI 深度诊断报告。请点击查看。"
+            
+            results.append({
+                "code": code,
+                "name": name,
+                "average_score": avg_score,
+                "val_vote": val_vote,
+                "mom_vote": mom_vote,
+                "risk_level": risk_level,
+                "summary": summary,
+                "report_path": f"data/uzi_reports/{local_fname}"
+            })
+        except Exception as e:
+            print(f"Error parsing HTML report for {code}: {e}")
+            
+    # Save to SQLite
+    for r in results:
+        cursor.execute("""
+            INSERT OR REPLACE INTO uzi_audit (
+                date, code, name, average_score, val_vote, mom_vote, risk_level, summary, report_path
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            date_str, r["code"], r["name"], r["average_score"],
+            r["val_vote"], r["mom_vote"], r["risk_level"], r["summary"], r["report_path"]
+        ))
+    conn.commit()
+    return results
+
 def run_recap(date_str, trade_dates):
     """Execute recap for a specific trading day"""
     print(f"\n====== Running Recap for {date_str} ======")
@@ -742,6 +1000,30 @@ def run_recap(date_str, trade_dates):
             pred_probs[idx] if pred_probs[idx] is not None else None
         ))
         
+    # 9.B UZI 智能审计调度（混合架构）
+    print("Running UZI Jury Audit...")
+    try:
+        uzi_status, uzi_path = check_uzi_project()
+        cands_for_audit = []
+        df_1b_sorted = df_1b.sort_values(by="接力指数", ascending=False)
+        for idx, row in df_1b_sorted.head(5).iterrows():
+            cands_for_audit.append({
+                "code": row["代码"],
+                "name": row["名称"],
+                "first_seal_time": str(row["首次封板时间"]),
+                "turnover": float(row["换手率"]),
+                "sector": row["所属行业"]
+            })
+            
+        if uzi_status == "online":
+            print("[UZI Audit] Running real UZI-Skill via subprocess...")
+            run_real_uzi_audit(conn, date_str, cands_for_audit, uzi_path)
+        else:
+            print("[UZI Audit] Running local rule-based emulator...")
+            run_local_uzi_emulator(conn, date_str, cands_for_audit, sector_counts)
+    except Exception as e:
+        print(f"Error during UZI Audit scheduling: {e}")
+        
     conn.commit()
     conn.close()
     
@@ -855,13 +1137,23 @@ def export_data():
         }
         history_list.append(recap_data)
         
+    # Fetch UZI audit records
+    cursor.execute("SELECT * FROM uzi_audit ORDER BY date DESC")
+    uzi_rows = cursor.fetchall()
+    uzi_cols = [desc[0] for desc in cursor.description]
+    
+    uzi_list = []
+    for u_row in uzi_rows:
+        uzi_list.append(dict(zip(uzi_cols, u_row)))
+        
     calibration_data = calculate_calibration_stats(conn)
     conn.close()
     
-    # Write history_list and calibration_data as JS script variables
+    # Write history_list, calibration_data and uzi_list as JS script variables
     js_content = (
         f"window.RECAP_HISTORY = {json.dumps(history_list, ensure_ascii=False, indent=2)};\n"
-        f"window.RECAP_CALIBRATION = {json.dumps(calibration_data, ensure_ascii=False, indent=2)};"
+        f"window.RECAP_CALIBRATION = {json.dumps(calibration_data, ensure_ascii=False, indent=2)};\n"
+        f"window.RECAP_UZI_AUDIT = {json.dumps(uzi_list, ensure_ascii=False, indent=2)};"
     )
     with open(JS_PATH, "w", encoding="utf-8") as f:
         f.write(js_content)
@@ -1310,6 +1602,67 @@ def generate_html():
                 </div>
             </div>
 
+            <!-- UZI 智能评委席报告 -->
+            <div class="border border-[#1e222b] bg-[#0e1013] p-5">
+                <div class="border-b border-[#1e222b] pb-2 mb-4 flex justify-between items-center">
+                    <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">UZI 智能评委席报告 / JURY AUDIT REPORT</span>
+                    <div class="flex items-center gap-2">
+                        <span class="text-3xs px-2 py-0.5 border"
+                              :class="isUziOnline ? 'border-green-900 bg-green-950/20 text-green-400' : 'border-yellow-900 bg-yellow-950/20 text-yellow-400'">
+                            {{ isUziOnline ? '大模型智能评审模式' : '本地财务规则模拟' }}
+                        </span>
+                        <span class="text-2xs text-[#ef4444] font-bold uppercase tracking-wider mono-font">JURY AUDIT PANEL</span>
+                    </div>
+                </div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
+                    <div v-for="u in currentUziAudit" :key="u.code" 
+                         class="bg-[#08090a] p-4 border border-[#1e222b] flex flex-col justify-between gap-4">
+                        <div>
+                            <div class="flex justify-between items-start border-b border-[#1e222b]/80 pb-2">
+                                <div>
+                                    <h4 class="text-sm font-bold text-white">{{ u.name }}</h4>
+                                    <p class="text-3xs text-gray-500 mono-font mt-0.5">{{ u.code }}</p>
+                                </div>
+                                <span class="text-lg font-bold text-red-500 code-font">{{ u.average_score.toFixed(1) }}分</span>
+                            </div>
+                            
+                            <div class="mt-3 space-y-1.5 text-3xs">
+                                <div class="flex justify-between items-center">
+                                    <span class="text-gray-500">巴菲特 (价值流派)</span>
+                                    <span :class="u.val_vote === '多头' ? 'text-red-500' : (u.val_vote === '空头' ? 'text-green-500' : 'text-gray-500')" class="font-bold">
+                                        {{ u.val_vote }}
+                                    </span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-gray-500">赵老哥 (游资接力)</span>
+                                    <span :class="u.mom_vote === '多头' ? 'text-red-500' : (u.mom_vote === '空头' ? 'text-green-500' : 'text-gray-500')" class="font-bold">
+                                        {{ u.mom_vote }}
+                                    </span>
+                                </div>
+                                <div class="flex justify-between items-center border-t border-[#1e222b]/60 pt-1.5 mt-1.5">
+                                    <span class="text-gray-500">大空头 (排雷评级)</span>
+                                    <span :class="u.risk_level === '安全' ? 'text-green-400' : 'text-red-400'" class="font-bold">
+                                        {{ u.risk_level }}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="text-3xs text-gray-400 bg-[#0e1013] p-2 border border-[#1e222b] leading-relaxed font-mono select-all">
+                            {{ u.summary }}
+                        </div>
+                        
+                        <div v-if="u.report_path" class="mt-1">
+                            <a :href="u.report_path" target="_blank"
+                               class="block w-full text-center bg-red-950 border border-red-900 text-red-400 hover:bg-red-900 hover:text-white py-1 text-3xs font-bold transition-all font-mono">
+                                查看 UZI 深度诊断报告
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- 模拟实战交易账本 -->
             <div class="border border-[#1e222b] bg-[#0e1013] p-5">
                 <div class="border-b border-[#1e222b] pb-2 mb-4 flex justify-between items-center">
@@ -1594,6 +1947,17 @@ def generate_html():
 
                 // Calibration backtest data
                 const calibrationData = ref(window.RECAP_CALIBRATION || []);
+
+                // UZI Audit Data
+                const uziAuditData = ref(window.RECAP_UZI_AUDIT || []);
+                
+                const currentUziAudit = computed(() => {
+                    return uziAuditData.value.filter(item => item.date === selectedDate.value);
+                });
+                
+                const isUziOnline = computed(() => {
+                    return currentUziAudit.value.some(item => item.report_path !== "");
+                });
 
                 // Interactive Simulator state
                 const simStockCode = ref("");
@@ -2202,6 +2566,9 @@ def generate_html():
                     filteredCandidates,
                     getScoreClass,
                     calibrationData,
+                    uziAuditData,
+                    currentUziAudit,
+                    isUziOnline,
                     simStockCode,
                     simOpenType,
                     simVolType,
