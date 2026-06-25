@@ -1183,29 +1183,327 @@ def generate_html():
     <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
     <!-- Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;700&family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background-color: #08090a;
+            font-family: 'Inter', 'Geist', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: radial-gradient(circle at 50% 0%, rgba(244, 63, 94, 0.04) 0%, rgba(10, 11, 15, 0) 60%), #0a0b0e;
             color: #94a3b8;
+            line-height: 1.55;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            text-rendering: geometricPrecision;
+            font-feature-settings: "ss01" 1, "cv02" 1, "calt" 1;
+        }
+        html {
+            scroll-behavior: smooth;
+        }
+        body::before {
+            content: "";
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+            opacity: 0.015;
+            pointer-events: none;
+            z-index: 9999;
         }
         .mono-font {
             font-family: 'Fira Code', 'Courier New', Courier, monospace;
+            font-size: 0.95em;
+            letter-spacing: 0.01em;
+            font-variant-numeric: tabular-nums;
         }
-        /* Custom scrollbar */
+        #app h1,
+        #app h2,
+        #app h3,
+        #app h4,
+        #app h5 {
+            font-family: 'Geist', 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            letter-spacing: -0.025em;
+        }
         ::-webkit-scrollbar {
-            width: 4px;
-            height: 4px;
+            width: 6px;
+            height: 6px;
         }
         ::-webkit-scrollbar-track {
-            background: #08090a;
+            background: #0a0b0e;
         }
         ::-webkit-scrollbar-thumb {
-            background: #1e222b;
+            background: #1f242f;
+            border-radius: 3px;
         }
         ::-webkit-scrollbar-thumb:hover {
-            background: #2e3440;
+            background: #f43f5e;
+        }
+
+        .console-card {
+            position: relative;
+            overflow: hidden;
+            background-color: rgba(17, 19, 24, 0.96);
+            background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0));
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            box-shadow:
+                inset 0 1px 0 0 rgba(255, 255, 255, 0.04),
+                0 8px 32px 0 rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(10px) saturate(1.06);
+            transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .console-card:hover {
+            transform: translateY(-1px);
+            border-color: rgba(244, 63, 94, 0.25);
+            box-shadow:
+                inset 0 1px 0 0 rgba(255, 255, 255, 0.06),
+                0 16px 48px 0 rgba(0, 0, 0, 0.6);
+        }
+        .console-card::before {
+            content: "";
+            position: absolute;
+            inset: 0 0 auto 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(244, 63, 94, 0.22), transparent);
+            opacity: 0.8;
+            pointer-events: none;
+        }
+
+        .console-input {
+            background-color: rgba(13, 14, 18, 0.96);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            box-shadow: inset 0 1px 2px 0 rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(8px);
+            transition: all 0.2s ease;
+        }
+        .console-input:focus {
+            border-color: rgba(244, 63, 94, 0.4);
+            box-shadow:
+                inset 0 1px 2px 0 rgba(0, 0, 0, 0.5),
+                0 0 16px 0 rgba(244, 63, 94, 0.12);
+        }
+        #app button,
+        #app a,
+        #app select,
+        #app input {
+            transition:
+                transform 160ms cubic-bezier(0.16, 1, 0.3, 1),
+                border-color 160ms ease,
+                box-shadow 160ms ease,
+                background-color 160ms ease,
+                color 160ms ease;
+        }
+        #app button:hover,
+        #app a:hover,
+        #app [role="button"]:hover {
+            transform: translateY(-0.5px);
+        }
+        #app button:active,
+        #app a:active,
+        #app [role="button"]:active {
+            transform: translateY(0) scale(0.995);
+        }
+        #app button:focus-visible,
+        #app a:focus-visible,
+        #app select:focus-visible,
+        #app input:focus-visible,
+        #app [role="button"]:focus-visible {
+            outline: 2px solid rgba(244, 63, 94, 0.22);
+            outline-offset: 2px;
+        }
+
+        body[data-theme="light"] {
+            background: radial-gradient(circle at top left, rgba(194, 65, 12, 0.07) 0%, rgba(194, 65, 12, 0) 28%), radial-gradient(circle at top right, rgba(37, 99, 235, 0.06) 0%, rgba(37, 99, 235, 0) 30%), #f5f1e8;
+            color: #334155;
+        }
+        body[data-theme="light"]::before {
+            opacity: 0.03;
+        }
+        body[data-theme="light"] ::-webkit-scrollbar-track {
+            background: #f5f1e8;
+        }
+        body[data-theme="light"] ::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+        }
+        body[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+        body[data-theme="light"] .console-card {
+            background-color: rgba(255, 255, 255, 0.78);
+            background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(255, 255, 255, 0.52));
+            border-color: rgba(31, 41, 55, 0.10);
+            box-shadow:
+                inset 0 1px 0 0 rgba(255, 255, 255, 0.65),
+                0 8px 24px 0 rgba(15, 23, 42, 0.06);
+        }
+        body[data-theme="light"] .console-card:hover {
+            border-color: rgba(194, 65, 12, 0.20);
+            box-shadow:
+                inset 0 1px 0 0 rgba(255, 255, 255, 0.72),
+                0 16px 36px 0 rgba(15, 23, 42, 0.08);
+        }
+        body[data-theme="light"] .console-input {
+            background-color: rgba(255, 250, 240, 0.96);
+            border-color: rgba(31, 41, 55, 0.10);
+            box-shadow: inset 0 1px 2px 0 rgba(15, 23, 42, 0.06);
+        }
+        body[data-theme="light"] .console-input:focus {
+            border-color: rgba(194, 65, 12, 0.45);
+            box-shadow:
+                inset 0 1px 2px 0 rgba(15, 23, 42, 0.06),
+                0 0 16px 0 rgba(194, 65, 12, 0.10);
+        }
+        body[data-theme="light"] #app [class*="border-[#1e222b]"] {
+            border-color: rgba(31, 41, 55, 0.10) !important;
+        }
+        body[data-theme="light"] #app [class*="border-[#1e222b]/80"] {
+            border-color: rgba(31, 41, 55, 0.08) !important;
+        }
+        body[data-theme="light"] #app [class*="border-[#1e222b]/60"] {
+            border-color: rgba(31, 41, 55, 0.06) !important;
+        }
+        body[data-theme="light"] #app [class*="border-[#1e222b]/20"] {
+            border-color: rgba(31, 41, 55, 0.04) !important;
+        }
+        body[data-theme="light"] #app [class*="divide-[#1e222b]"] > * + * {
+            border-color: rgba(31, 41, 55, 0.10) !important;
+        }
+        body[data-theme="light"] #app [class*="bg-[#08090a]"] {
+            background-color: #fffaf0 !important;
+        }
+        body[data-theme="light"] #app [class*="bg-[#0e1013]"] {
+            background-color: #fffdf8 !important;
+        }
+        body[data-theme="light"] #app [class*="bg-[#0"],
+        body[data-theme="light"] #app [class*="bg-[#1"] {
+            background-color: #fffaf0 !important;
+        }
+        body[data-theme="light"] #app [class*="border-[#1"],
+        body[data-theme="light"] #app [class*="border-[#2"] {
+            border-color: rgba(31, 41, 55, 0.10) !important;
+        }
+        body[data-theme="light"] #app [class*="text-[#9aa8be]"] {
+            color: #64748b !important;
+        }
+        body[data-theme="light"] #app [class*="text-[#d1d5db]"] {
+            color: #334155 !important;
+        }
+
+        body[data-theme="light"] #app [class*="text-[#8b9bb4]"] {
+            color: #64748b !important;
+        }
+        body[data-theme="light"] #app [class*="text-gray-500"] {
+            color: #64748b !important;
+        }
+        body[data-theme="light"] #app [class*="text-gray-400"] {
+            color: #94a3b8 !important;
+        }
+        body[data-theme="light"] #app [class*="text-gray-600"] {
+            color: #475569 !important;
+        }
+        body[data-theme="light"] #app [class*="text-white"] {
+            color: #0f172a !important;
+        }
+        body[data-theme="light"] #app [class*="hover:border-red-500/20"]:hover {
+            border-color: rgba(194, 65, 12, 0.20) !important;
+        }
+        body[data-theme="light"] #app [class*="hover:bg-[#1d212b]/20"]:hover {
+            background-color: rgba(194, 65, 12, 0.04) !important;
+        }
+        body[data-theme="light"] #app [class*="bg-red-950/40"],
+        body[data-theme="light"] #app [class*="bg-red-950"] {
+            background-color: rgba(194, 65, 12, 0.10) !important;
+            border-color: rgba(194, 65, 12, 0.25) !important;
+            color: #c2410c !important;
+            border-radius: 2px !important;
+        }
+        body[data-theme="light"] #app select,
+        body[data-theme="light"] #app input[type="text"] {
+            background-color: #fffaf0 !important;
+            border-color: rgba(31, 41, 55, 0.10) !important;
+            color: #0f172a !important;
+        }
+        body[data-theme="light"] #app select:focus-visible,
+        body[data-theme="light"] #app input[type="text"]:focus-visible {
+            outline-color: rgba(194, 65, 12, 0.22);
+        }
+        #app .console-card .text-2xs,
+        #app .console-card .text-3xs,
+        #app .console-card .text-[10px],
+        #app .console-card .text-[11px] {
+            line-height: 1.6;
+        }
+        #app .console-card .space-y-2 > * + * {
+            margin-top: 0.625rem !important;
+        }
+        #app .console-card .space-y-3 > * + * {
+            margin-top: 0.875rem !important;
+        }
+
+        #app [class*="border-[#1e222b]"] {
+            border-color: rgba(255, 255, 255, 0.06) !important;
+        }
+        #app [class*="border-[#1e222b]/80"] {
+            border-color: rgba(255, 255, 255, 0.04) !important;
+        }
+        #app [class*="border-[#1e222b]/60"] {
+            border-color: rgba(255, 255, 255, 0.03) !important;
+        }
+        #app [class*="border-[#1e222b]/20"] {
+            border-color: rgba(255, 255, 255, 0.02) !important;
+        }
+        #app [class*="divide-[#1e222b]"] > * + * {
+            border-color: rgba(255, 255, 255, 0.06) !important;
+        }
+        #app [class*="bg-[#08090a]"] {
+            background-color: #0a0b0f !important;
+        }
+        #app [class*="bg-[#0e1013]"] {
+            background-color: #11131c !important;
+        }
+        #app [class*="text-[#8b9bb4]"] {
+            color: #9aa8be !important;
+        }
+        #app [class*="text-gray-500"] {
+            color: #7b8496 !important;
+        }
+        #app [class*="text-gray-400"] {
+            color: #9aa0ad !important;
+        }
+        #app [class*="text-gray-600"] {
+            color: #5b6473 !important;
+        }
+        #app [class*="hover:border-red-500/20"]:hover {
+            border-color: rgba(244, 63, 94, 0.2) !important;
+        }
+        #app [class*="hover:bg-[#1d212b]/20"]:hover {
+            background-color: rgba(244, 63, 94, 0.02) !important;
+        }
+
+        select, input[type="text"] {
+            border-radius: 2px !important;
+            padding-top: 0.375rem !important;
+            padding-bottom: 0.375rem !important;
+            border-color: rgba(255, 255, 255, 0.08) !important;
+            background-color: #0d0e14 !important;
+        }
+        select:focus, input[type="text"]:focus {
+            border-color: #f43f5e !important;
+            outline: none !important;
+        }
+
+        #app [class*="bg-red-950/40"],
+        #app [class*="bg-red-950"] {
+            background-color: rgba(225, 29, 72, 0.1) !important;
+            border-color: rgba(225, 29, 72, 0.3) !important;
+            color: #f43f5e !important;
+            border-radius: 2px !important;
+            transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+        }
+        #app [class*="bg-red-950/40"]:hover,
+        #app [class*="bg-red-950"]:hover {
+            background-color: #e11d48 !important;
+            color: #ffffff !important;
+            border-color: #e11d48 !important;
         }
     </style>
 </head>
@@ -1213,10 +1511,18 @@ def generate_html():
     <div id="app" v-cloak class="container mx-auto px-4 py-6 max-w-7xl">
         
         <!-- Header -->
-        <header class="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-[#1e222b] pb-4 mb-6 gap-4">
+        <header class="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-[#1e222b] pb-4 mb-8 gap-4">
             <div>
-                <h1 class="text-2xl font-bold tracking-tight text-white flex items-center gap-2 uppercase">
-                    <span class="text-red-500">■</span> A股 1进2 接力复盘控制台
+                <h1 class="text-2xl font-bold tracking-tight text-white flex items-center gap-3 uppercase">
+                    <a href="javascript:history.back()" class="text-[#8b9bb4] hover:text-white text-3xs uppercase tracking-wider font-semibold mr-2 border-r border-[#1e222b] pr-3 mono-font inline-block align-middle">&larr; BACK / 返回</a>
+                    <!-- Custom High-End SVG Brand Logo -->
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" class="inline-block align-middle">
+                        <rect width="24" height="24" fill="#1b1c24" stroke="rgba(244,63,94,0.3)" stroke-width="1"/>
+                        <path d="M12 4L6 10H10V17H14V11H18L12 4Z" fill="#F43F5E" />
+                        <path d="M8 12H10" stroke="#FFFFFF" stroke-width="1.2" stroke-linecap="round"/>
+                        <path d="M14 12H16" stroke="#FFFFFF" stroke-width="1.2" stroke-linecap="round"/>
+                    </svg>
+                    <span class="text-white">A股 1进2 接力复盘控制台</span>
                 </h1>
                 <p class="text-gray-500 text-xs mt-1 uppercase tracking-wide mono-font">1进2 连板接力分析控制台</p>
             </div>
@@ -1225,7 +1531,7 @@ def generate_html():
                 <!-- Timeline Simulator -->
                 <div class="flex items-center gap-2">
                     <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">竞价时段模拟:</span>
-                    <select v-model="simTimePhase" class="bg-[#0e1013] border border-[#1e222b] rounded-none px-3 py-1.5 text-xs text-white font-medium focus:outline-none focus:border-red-500 mono-font" aria-label="选择复盘日期">
+                    <select v-model="simTimePhase" class="console-input rounded-none px-3 py-1.5 text-xs text-white font-medium focus:outline-none focus:border-red-500 mono-font" aria-label="竞价时段模拟">
                         <option value="real">系统实时时间</option>
                         <option value="915">模拟 09:17 (虚假试盘)</option>
                         <option value="920">模拟 09:22 (真实竞价)</option>
@@ -1235,8 +1541,17 @@ def generate_html():
                 </div>
                 
                 <div class="flex items-center gap-2">
+                    <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">主题模式:</span>
+                    <select v-model="themeMode" class="console-input rounded-none px-3 py-1.5 text-xs text-white font-medium focus:outline-none focus:border-red-500 mono-font" aria-label="主题模式">
+                        <option value="system">跟随系统</option>
+                        <option value="light">日间主题</option>
+                        <option value="dark">夜间主题</option>
+                    </select>
+                </div>
+
+                <div class="flex items-center gap-2">
                     <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">选择复盘日期:</span>
-                    <select v-model="selectedDate" class="bg-[#0e1013] border border-[#1e222b] rounded-none px-3 py-1.5 text-xs text-white font-medium focus:outline-none focus:border-red-500 mono-font" aria-label="选择复盘日期">
+                    <select v-model="selectedDate" class="console-input rounded-none px-3 py-1.5 text-xs text-white font-medium focus:outline-none focus:border-red-500 mono-font" aria-label="选择复盘日期">
                         <option v-for="date in availableDates" :key="date" :value="date">{{ date }}</option>
                     </select>
                 </div>
@@ -1251,12 +1566,12 @@ def generate_html():
             系统数据加载中...
         </div>
 
-        <div v-else class="space-y-4">
+        <div v-else class="space-y-6">
             
             <!-- Top Row: Sentiment Console & Trends -->
-            <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <!-- Sentiment Console (1/3) -->
-                <div class="border border-[#1e222b] bg-[#0e1013] p-5 flex flex-col justify-between">
+                <div class="console-card p-6 flex flex-col justify-between">
                     <div>
                         <div class="border-b border-[#1e222b] pb-2 mb-4">
                             <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">市场短线情绪</span>
@@ -1265,17 +1580,23 @@ def generate_html():
                         <!-- SVG Dial -->
                         <div class="py-4 relative flex flex-col items-center">
                             <svg viewBox="0 0 120 70" class="w-36 h-20">
-                                <!-- Arc background -->
-                                <path d="M 10 60 A 50 50 0 0 1 110 60" fill="none" stroke="#1d212a" stroke-width="8" stroke-linecap="square"/>
-                                <!-- Ticks -->
-                                <line x1="10" y1="60" x2="16" y2="60" stroke="#22c55e" stroke-width="2" />
-                                <line x1="60" y1="10" x2="60" y2="16" stroke="#475569" stroke-width="2" />
-                                <line x1="104" y1="60" x2="110" y2="60" stroke="#ef4444" stroke-width="2" />
-                                <!-- Needle -->
-                                <line x1="60" y1="60" x2="60" y2="18" stroke="#ef4444" stroke-width="2.5" stroke-linecap="square"
+                                <!-- Concentric arcs for precision instrument feel -->
+                                <path d="M 10 60 A 50 50 0 0 1 110 60" fill="none" stroke="rgba(255,255,255,0.03)" stroke-width="8" stroke-linecap="square"/>
+                                <path d="M 14 60 A 46 46 0 0 1 106 60" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="1" stroke-dasharray="2,2"/>
+                                <!-- Ticks: Green is bearish/down on left, Red is bullish/up on right (Chinese stock conventions) -->
+                                <line x1="10" y1="60" x2="16" y2="60" stroke="#10b981" stroke-width="1.5" /> <!-- Green (Bearish) -->
+                                <line x1="20" y1="38" x2="25" y2="41" stroke="#3b82f6" stroke-width="1" />
+                                <line x1="38" y1="20" x2="41" y2="25" stroke="#64748b" stroke-width="1" />
+                                <line x1="60" y1="10" x2="60" y2="17" stroke="#64748b" stroke-width="1.5" /> <!-- Center (Neutral) -->
+                                <line x1="82" y1="20" x2="79" y2="25" stroke="#f59e0b" stroke-width="1" />
+                                <line x1="100" y1="38" x2="95" y2="41" stroke="#e11d48" stroke-width="1" />
+                                <line x1="104" y1="60" x2="110" y2="60" stroke="#e11d48" stroke-width="1.5" /> <!-- Red (Bullish) -->
+                                <!-- Needle: thinner and elegant -->
+                                <line x1="60" y1="60" x2="60" y2="16" stroke="#f43f5e" stroke-width="1.5" stroke-linecap="square"
                                       :style="{ transform: 'rotate(' + needleAngle + 'deg)', transformOrigin: '60px 60px' }" class="transition-transform duration-500 ease-out" />
-                                <!-- Center pin -->
-                                <circle cx="60" cy="60" r="4.5" fill="#e2e8f0" />
+                                <!-- Center pin with a nested ring for depth -->
+                                <circle cx="60" cy="60" r="5" fill="#111318" stroke="#f43f5e" stroke-width="1" />
+                                <circle cx="60" cy="60" r="2" fill="#ffffff" />
                             </svg>
                             <div class="text-2xl font-bold mt-2 uppercase tracking-wide" :class="sentimentColorClass">
                                 {{ currentRecap.market.sentiment }}
@@ -1300,7 +1621,7 @@ def generate_html():
                         <span class="text-[#8b9bb4] text-3xs uppercase tracking-wider font-semibold block mb-2">量化胜率校验 / 历史晋级率回测</span>
                         <div class="space-y-1.5 text-3xs mono-font">
                             <div v-for="cal in calibrationData" :key="cal.score_range" class="flex justify-between items-center">
-                                <span class="text-[#8b9bb4]">{{ cal.bucket_name.split(' ')[0] }} ({{ cal.score_range }}分)</span>
+                                <span class="text-gray-500">{{ cal.bucket_name.split(' ')[0] }} ({{ cal.score_range }}分)</span>
                                 <span class="font-bold" :class="cal.win_rate >= 15 ? 'text-red-500' : 'text-gray-400'">
                                     {{ cal.win_rate.toFixed(2) }}% <span class="text-[#8b9bb4] font-normal">({{ cal.promoted_count }}/{{ cal.total_count }})</span>
                                 </span>
@@ -1310,9 +1631,9 @@ def generate_html():
                 </div>
 
                 <!-- Trend chart (2/3) -->
-                <div class="lg:col-span-2 border border-[#1e222b] bg-[#0e1013] p-5 flex flex-col justify-between">
+                <div class="lg:col-span-2 console-card p-6 flex flex-col justify-between">
                     <div class="flex justify-between items-center border-b border-[#1e222b] pb-2 mb-4">
-                        <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">1进2  晋级率与总涨停家数历史趋势</span>
+                        <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">1进2 晋级率与总涨停家数历史趋势</span>
                         <span class="text-2xs text-[#8b9bb4] uppercase tracking-wider font-semibold mono-font">最近15个交易日</span>
                     </div>
                     <div class="h-[210px] relative">
@@ -1332,12 +1653,12 @@ def generate_html():
             </div>
 
             <!-- Index & Northbound Row -->
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
                 <!-- SH Index -->
-                <div class="border border-[#1e222b] bg-[#0e1013] p-4 flex flex-col justify-between">
+                <div class="console-card p-5 flex flex-col justify-between">
                     <div class="flex justify-between items-center text-[#8b9bb4] text-2xs uppercase">
                         <span>上证指数</span>
-                        <span class="mono-font text-3xs">000001</span>
+                        <span class="mono-font text-3xs text-gray-500">000001</span>
                     </div>
                     <div class="mt-2 flex justify-between items-baseline">
                         <span class="text-lg font-bold text-white mono-font">{{ currentRecap.market.sh_price.toFixed(2) }}</span>
@@ -1347,10 +1668,10 @@ def generate_html():
                     </div>
                 </div>
                 <!-- SZ Index -->
-                <div class="border border-[#1e222b] bg-[#0e1013] p-4 flex flex-col justify-between">
+                <div class="console-card p-5 flex flex-col justify-between">
                     <div class="flex justify-between items-center text-[#8b9bb4] text-2xs uppercase">
                         <span>深证成指</span>
-                        <span class="mono-font text-3xs">399001</span>
+                        <span class="mono-font text-3xs text-gray-500">399001</span>
                     </div>
                     <div class="mt-2 flex justify-between items-baseline">
                         <span class="text-lg font-bold text-white mono-font">{{ currentRecap.market.sz_price.toFixed(2) }}</span>
@@ -1360,10 +1681,10 @@ def generate_html():
                     </div>
                 </div>
                 <!-- CY Index -->
-                <div class="border border-[#1e222b] bg-[#0e1013] p-4 flex flex-col justify-between">
+                <div class="console-card p-5 flex flex-col justify-between">
                     <div class="flex justify-between items-center text-[#8b9bb4] text-2xs uppercase">
                         <span>创业板指</span>
-                        <span class="mono-font text-3xs">399006</span>
+                        <span class="mono-font text-3xs text-gray-500">399006</span>
                     </div>
                     <div class="mt-2 flex justify-between items-baseline">
                         <span class="text-lg font-bold text-white mono-font">{{ currentRecap.market.cy_price.toFixed(2) }}</span>
@@ -1373,7 +1694,7 @@ def generate_html():
                     </div>
                 </div>
                 <!-- Northbound Net Flow -->
-                <div class="border border-[#1e222b] bg-[#0e1013] p-4 flex flex-col justify-between">
+                <div class="console-card p-5 flex flex-col justify-between">
                     <div class="flex justify-between items-center text-[#8b9bb4] text-2xs uppercase">
                         <span>北向资金流向</span>
                         <span class="bg-[#1b1c24] border border-[#24262b] px-1 text-3xs font-semibold">净买入</span>
@@ -1388,76 +1709,85 @@ def generate_html():
             </div>
 
             <!-- Top 5 Focus Candidates (Vertical List layout) -->
-            <div class="border border-[#1e222b] bg-[#0e1013] p-5">
+            <div class="console-card p-6 md:p-8">
                 <div class="border-b border-[#1e222b] pb-2 mb-4 flex justify-between items-center">
                     <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">重点关注首板标的</span>
                     <span class="text-2xs text-[#ef4444] font-bold uppercase tracking-wider mono-font">接力因子前五强</span>
                 </div>
-                <div class="divide-y divide-[#1e222b]">
-                    <div v-for="(c, idx) in topCandidates" :key="c.code" class="py-4 first:pt-0 last:pb-0 flex flex-col md:flex-row justify-between gap-4">
-                        <!-- Left: Stock Metrics -->
-                        <div class="w-full md:w-1/3 flex flex-col justify-between gap-2">
-                            <div class="flex justify-between items-start">
-                                <div class="flex items-center gap-2">
-                                    <span class="text-xs px-2 py-0.5 font-bold border" :class="idx === 0 ? 'bg-red-950 text-red-400 border-red-900' : 'bg-[#1b1c24] text-gray-400 border-[#24262b]'">
-                                        NO.{{ idx + 1 }}
-                                    </span>
-                                    <span class="text-base font-bold text-white tracking-tight">{{ c.name }}</span>
-                                    <span class="text-xs font-semibold text-[#8b9bb4] mono-font">{{ c.code }}</span>
-                                    <button @click.stop="buyStock(c, c.price)" 
-                                            class="bg-red-950/40 border border-red-900/50 text-red-400 hover:bg-red-900 hover:text-white px-2 py-0.5 text-2xs font-semibold select-none transition-all ml-1">
-                                        模拟买入
-                                    </button>
+                <div class="space-y-3">
+                    <div v-for="(c, idx) in topCandidates" :key="c.code" class="py-4 md:py-5 first:pt-0 last:pb-0">
+                        <div class="flex flex-col md:flex-row gap-5 border border-[#1e222b]/60 bg-[#0b0d12] p-4 md:p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                            <!-- Left: Stock Metrics -->
+                            <div class="w-full md:w-1/3 flex flex-col justify-between gap-4">
+                                <div class="flex justify-between items-start gap-3">
+                                    <div class="flex items-center gap-2 min-w-0">
+                                        <span class="text-[9px] px-2 py-0.5 font-bold border rounded-none tracking-[0.12em]"
+                                              :class="idx === 0 ? 'bg-red-950 text-red-400 border-red-900' : 'bg-[#1b1c24] text-gray-400 border-[#24262b]'">
+                                            NO.{{ idx + 1 }}
+                                        </span>
+                                        <div class="min-w-0">
+                                            <span class="block text-[15px] font-semibold text-white tracking-tight truncate">{{ c.name }}</span>
+                                            <span class="block text-[10px] text-[#9aa8be] mono-font truncate">{{ c.code }}</span>
+                                        </div>
+                                    </div>
+                                    <div class="flex flex-wrap justify-end gap-2">
+                                        <span class="text-[9px] text-yellow-500 font-bold border border-yellow-500/15 px-2 py-0.5 bg-yellow-500/5 mono-font tracking-[0.08em]">
+                                            接力指数 {{ c.score }}
+                                        </span>
+                                        <span v-if="c.pred_prob !== null && c.pred_prob !== undefined" class="text-[9px] text-red-400 font-bold border border-red-500/15 px-2 py-0.5 bg-red-500/5 mono-font tracking-[0.08em]">
+                                            预估晋级率 {{ (c.pred_prob * 100).toFixed(1) }}%
+                                        </span>
+                                        <button @click.stop="buyStock(c, c.price)"
+                                                class="bg-red-950/40 border border-red-900/50 text-red-400 hover:bg-red-900 hover:text-white px-2 py-0.5 text-2xs font-semibold select-none transition-all active:scale-[0.96]">
+                                            模拟买入
+                                        </button>
+                                    </div>
                                 </div>
-                                <div class="flex gap-2">
-                                    <span class="text-xs text-yellow-500 font-bold border border-yellow-500/20 px-2 py-0.5 bg-yellow-500/5 mono-font">
-                                        接力指数: {{ c.score }}
-                                    </span>
-                                    <span class="text-xs text-red-400 font-bold border border-red-500/20 px-2 py-0.5 bg-red-500/5 mono-font">
-                                        预估晋级率: {{ c.pred_prob !== null && c.pred_prob !== undefined ? (c.pred_prob * 100).toFixed(1) + '%' : '--' }}
-                                    </span>
+                                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mt-1 text-3xs mono-font">
+                                    <div class="bg-[#08090a] border border-[#1e222b]/60 p-2.5">
+                                        <div class="text-[#9aa8be] uppercase tracking-wide">首次封板时间</div>
+                                        <div class="text-white font-medium mt-0.5">{{ c.first_seal_time_formatted }}</div>
+                                    </div>
+                                    <div class="bg-[#08090a] border border-[#1e222b]/60 p-2.5">
+                                        <div class="text-[#9aa8be] uppercase tracking-wide">日内炸板次数</div>
+                                        <div class="text-white font-medium mt-0.5" :class="c.blown_count >= 2 ? 'text-yellow-500 font-semibold' : ''">{{ c.blown_count }}</div>
+                                    </div>
+                                    <div class="bg-[#08090a] border border-[#1e222b]/60 p-2.5">
+                                        <div class="text-[#9aa8be] uppercase tracking-wide">日内换手率</div>
+                                        <div class="text-white font-medium mt-0.5">{{ c.turnover.toFixed(2) }}%</div>
+                                    </div>
+                                    <div class="bg-[#08090a] border border-[#1e222b]/60 p-2.5">
+                                        <div class="text-[#9aa8be] uppercase tracking-wide">流通市值</div>
+                                        <div class="text-white font-medium mt-0.5">{{ c.float_mcap.toFixed(2) }} 亿</div>
+                                    </div>
+                                </div>
+                                <div class="text-2xs text-[#9aa8be] mt-1 font-semibold uppercase tracking-wide">
+                                    所属行业: <span class="text-gray-300 normal-case">{{ c.sector }}</span>
                                 </div>
                             </div>
-                            <div class="grid grid-cols-4 gap-2 mt-2 text-3xs mono-font text-[#8b9bb4] uppercase">
-                                <div>
-                                    <div>首次封板时间</div>
-                                    <div class="text-white font-medium mt-0.5">{{ c.first_seal_time_formatted }}</div>
+                            <!-- Right: Action advice -->
+                            <div class="w-full md:w-2/3 bg-[#11131c] p-5 border border-[#1e222b]/60 rounded-none flex flex-col justify-center gap-2.5 min-h-[170px]">
+                                <div class="flex items-center justify-between">
+                                    <span class="text-[10px] uppercase tracking-[0.14em] text-[#9aa8be] font-semibold">操作建议</span>
+                                    <span class="text-[10px] text-[#fb7185] font-bold uppercase tracking-[0.18em] mono-font">INTRADAY PLAYBOOK</span>
                                 </div>
-                                <div>
-                                    <div>日内炸板次数</div>
-                                    <div class="text-white font-medium mt-0.5" :class="c.blown_count >= 2 ? 'text-yellow-500 font-semibold' : ''">{{ c.blown_count }}</div>
-                                </div>
-                                <div>
-                                    <div>日内换手率</div>
-                                    <div class="text-white font-medium mt-0.5">{{ c.turnover.toFixed(2) }}%</div>
-                                </div>
-                                <div>
-                                    <div>流通市值</div>
-                                    <div class="text-white font-medium mt-0.5">{{ c.float_mcap.toFixed(2) }} 亿</div>
+                                <div class="text-sm text-[#d1d5db] leading-7 font-mono border-l-2 border-l-red-500/50 pl-3">
+                                    {{ c.playbook }}
                                 </div>
                             </div>
-                            <div class="text-2xs text-[#8b9bb4] mt-1 font-semibold uppercase">
-                                所属行业: <span class="text-gray-300 normal-case">{{ c.sector }}</span>
-                            </div>
-                        </div>
-                        <!-- Right: Action advice -->
-                        <div class="w-full md:w-2/3 bg-[#08090a] p-4 border border-[#1e222b] text-xs text-gray-300 leading-relaxed font-mono flex items-center border-l-2 border-l-red-500/50">
-                            {{ c.playbook }}
                         </div>
                     </div>
-                </div>
-            </div>
 
             <!-- 次日实战操作控制台 -->
-            <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <!-- 竞价监控哨口 (2/3) -->
-                <div class="lg:col-span-2 border border-[#1e222b] bg-[#0e1013] p-5 flex flex-col justify-between">
+                <div class="lg:col-span-2 console-card p-6 md:p-8 flex flex-col justify-between">
                     <div>
                         <div class="border-b border-[#1e222b] pb-2 mb-4 flex justify-between items-center">
                             <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">次日竞价监控哨 / 量化上车标准</span>
                             <div class="flex gap-2">
                                 <button @click="fetchLiveQuotes" 
-                                        class="bg-red-950 border border-red-900 text-red-400 hover:bg-red-900 hover:text-white px-2 py-1 text-3xs font-bold transition-all uppercase tracking-wider mono-font">
+                                        class="bg-red-950 border border-red-900 text-red-400 hover:bg-red-900 hover:text-white px-2 py-1 text-3xs font-bold transition-all active:scale-[0.97] uppercase tracking-wider mono-font">
                                     刷新今日实时竞价 (09:25后生效)
                                 </button>
                                 <span class="text-2xs text-[#ef4444] font-bold uppercase tracking-wider mono-font">MORNING AUCTION TARGETS</span>
@@ -1487,7 +1817,7 @@ def generate_html():
                                  role="button"
                                  tabindex="0"
                                  :class="simStockCode === c.code ? 'border-red-500 bg-red-950/5 focus:ring-1 focus:ring-red-500' : 'border-[#1e222b] bg-[#0e1013] hover:border-red-500/20 focus:ring-1 focus:ring-red-500'"
-                                 class="border p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 cursor-pointer transition-all duration-200 select-none focus:outline-none">
+                                 class="border p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 cursor-pointer transition-all duration-200 select-none focus:outline-none active:scale-[0.99]">
                                 
                                 <!-- Part 1: Stock Identity -->
                                 <div class="w-full sm:w-1/4">
@@ -1508,7 +1838,7 @@ def generate_html():
                                         <div class="text-yellow-500 font-bold mt-0.5">{{ (c.price * 1.02).toFixed(2) }} ~ {{ (c.price * 1.05).toFixed(2) }}元</div>
                                         <!-- Actual open from live data -->
                                         <div v-if="liveData[c.code]" class="mt-1 pt-1 border-t border-[#1e222b]">
-                                            <span class="text-[#8b9bb4]">实际开盘: </span>
+                                            <span class="text-gray-500">实际开盘: </span>
                                             <span :class="liveData[c.code].change >= 0 ? 'text-red-500' : 'text-green-500'" class="font-bold">
                                                 {{ liveData[c.code].change >= 0 ? '+' : '' }}{{ liveData[c.code].change.toFixed(2) }}%
                                             </span>
@@ -1519,7 +1849,7 @@ def generate_html():
                                         <div class="text-red-400 font-bold mt-0.5">&gt;{{ (c.float_mcap * c.turnover * 10).toFixed(0) }}万</div>
                                         <!-- Actual auction volume from live data -->
                                         <div v-if="liveData[c.code]" class="mt-1 pt-1 border-t border-[#1e222b]">
-                                            <span class="text-[#8b9bb4]">实际竞价: </span>
+                                            <span class="text-gray-500">实际竞价: </span>
                                             <span :class="isVolMet(c) ? 'text-red-400 font-bold' : 'text-gray-400'" class="font-bold">
                                                 {{ liveData[c.code].turnover.toFixed(0) }}万
                                             </span>
@@ -1548,7 +1878,7 @@ def generate_html():
                 </div>
 
                 <!-- 1进2上车决策模拟器 (1/3) -->
-                <div class="border border-[#1e222b] bg-[#0e1013] p-5 flex flex-col justify-between">
+                <div class="console-card p-6 md:p-8 flex flex-col justify-between">
                     <div>
                         <div class="border-b border-[#1e222b] pb-2 mb-4">
                             <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">1进2 实战上车决策器 / 模拟判定</span>
@@ -1558,7 +1888,7 @@ def generate_html():
                             <!-- 1. Select Stock -->
                             <div>
                                 <label class="text-[#8b9bb4] text-3xs uppercase block font-semibold mb-1">选择目标股:</label>
-                                <select v-model="simStockCode" class="w-full bg-[#08090a] border border-[#1e222b] rounded-none px-2 py-1 text-2xs text-white focus:outline-none focus:border-red-500 mono-font" aria-label="选择模拟目标股">
+                                <select v-model="simStockCode" class="w-full console-input border border-[#1e222b] rounded-none px-2 py-1 text-2xs text-white focus:outline-none focus:border-red-500 mono-font" aria-label="选择模拟目标股">
                                     <option v-for="c in topCandidates" :key="c.code + '-sim'" :value="c.code">{{ c.name }} ({{ c.code }})</option>
                                 </select>
                             </div>
@@ -1566,8 +1896,8 @@ def generate_html():
                             <!-- 2. Select Open % -->
                             <div>
                                 <label class="text-[#8b9bb4] text-3xs uppercase block font-semibold mb-1">明日 09:25 开盘涨幅:</label>
-                                <select v-model="simOpenType" class="w-full bg-[#08090a] border border-[#1e222b] rounded-none px-2 py-1 text-2xs text-white focus:outline-none focus:border-red-500" aria-label="选择明日开盘涨幅">
-                                    <option value="fever">高烧低走区 (高开 >6% 或一字板)</option>
+                                <select v-model="simOpenType" class="w-full console-input border border-[#1e222b] rounded-none px-2 py-1 text-2xs text-white focus:outline-none focus:border-red-500" aria-label="选择明日开盘涨幅">
+                                    <option value="fever">高烧低走区 (高开 &gt;6% 或一字板)</option>
                                     <option value="ideal">理想溢价区 (高开 2% ~ 5%)</option>
                                     <option value="mild">温和试探区 (高开 0% ~ 2%)</option>
                                     <option value="low">低开分歧区 (平开或低开 &lt;0%)</option>
@@ -1577,7 +1907,7 @@ def generate_html():
                             <!-- 3. Select Volume -->
                             <div>
                                 <label class="text-[#8b9bb4] text-3xs uppercase block font-semibold mb-1">明日 09:25 竞价成交额:</label>
-                                <select v-model="simVolType" class="w-full bg-[#08090a] border border-[#1e222b] rounded-none px-2 py-1 text-2xs text-white focus:outline-none focus:border-red-500" aria-label="选择明日竞价成交量">
+                                <select v-model="simVolType" class="w-full console-input border border-[#1e222b] rounded-none px-2 py-1 text-2xs text-white focus:outline-none focus:border-red-500" aria-label="选择明日竞价成交量">
                                     <option value="met">放量达标 (达到或超出目标值)</option>
                                     <option value="not_met">缩量未达标 (低于目标值)</option>
                                 </select>
@@ -1586,7 +1916,7 @@ def generate_html():
                             <!-- 4. Select Open Trend -->
                             <div>
                                 <label class="text-[#8b9bb4] text-3xs uppercase block font-semibold mb-1">开盘前15分钟分时走势:</label>
-                                <select v-model="simTrendType" class="w-full bg-[#08090a] border border-[#1e222b] rounded-none px-2 py-1 text-2xs text-white focus:outline-none focus:border-red-500" aria-label="选择开盘分时走势">
+                                <select v-model="simTrendType" class="w-full console-input border border-[#1e222b] rounded-none px-2 py-1 text-2xs text-white focus:outline-none focus:border-red-500" aria-label="选择开盘分时走势">
                                     <option value="breakout">高开下探不破分时均线，放量突破开盘价</option>
                                     <option value="limit_up">开盘爆量单边直线拉升，极速封死二板</option>
                                     <option value="weak">冲高后无量下杀，跌破均线且不翻红</option>
@@ -1597,7 +1927,7 @@ def generate_html():
                     </div>
 
                     <!-- Simulator Result -->
-                    <div class="mt-4 p-3 border border-[#1e222b] bg-[#08090a] text-2xs">
+                    <div class="mt-4 p-3 border border-[#1e222b] bg-[#08090a] rounded-none text-2xs">
                         <div class="flex justify-between items-center font-bold mb-1" :class="simResult.color">
                             <span>决策判定: {{ simResult.decision }}</span>
                             <span class="text-3xs uppercase tracking-wide border px-1" :class="simResult.border">{{ simResult.badge }}</span>
@@ -1608,63 +1938,61 @@ def generate_html():
             </div>
 
             <!-- UZI 智能评委席报告 -->
-            <div class="border border-[#1e222b] bg-[#0e1013] p-5 rounded-none">
-                <div class="border-b border-[#1e222b] pb-2 mb-4 flex justify-between items-center">
-                    <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">■ UZI 智能评委席报告 / UZI JURY AUDIT REPORT</span>
+            <div class="console-card p-6 md:p-8 rounded-none">
+                <div class="border-b border-[#1e222b] pb-2 mb-4 flex justify-between items-center gap-4">
+                    <span class="text-[#9aa8be] text-2xs uppercase tracking-wider font-semibold">■ UZI 智能评委席报告 / UZI JURY AUDIT REPORT</span>
                     <div class="flex items-center gap-2">
-                        <span class="text-3xs px-2 py-0.5 border rounded-none"
+                        <span class="text-[10px] px-2 py-0.5 border rounded-none tracking-[0.14em] font-semibold"
                               :class="isUziOnline ? 'border-green-900 bg-green-950/20 text-green-400' : 'border-yellow-900 bg-yellow-950/20 text-yellow-400'">
                             {{ isUziOnline ? '大模型智能评审模式' : '本地财务规则模拟' }}
                         </span>
-                        <span class="text-2xs text-[#ef4444] font-bold uppercase tracking-wider mono-font">JURY AUDIT PANEL</span>
+                        <span class="text-[10px] text-[#fb7185] font-bold uppercase tracking-[0.18em] mono-font">JURY AUDIT PANEL</span>
                     </div>
                 </div>
-                
-                <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
-                    <div v-for="u in currentUziAudit" :key="u.code" 
-                         class="bg-[#08090a] p-4 border border-[#1e222b] rounded-none flex flex-col justify-between gap-4">
+
+                <div class="grid grid-cols-1 md:grid-cols-5 gap-4 md:gap-5">
+                    <div v-for="u in currentUziAudit" :key="u.code"
+                         class="bg-[#0b0d12] p-4 md:p-5 border border-[#1e222b]/60 rounded-none flex flex-col justify-between gap-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
                         <div>
-                            <div class="border-b border-[#1e222b]/80 pb-2">
-                                <div class="flex justify-between items-center">
-                                    <h4 class="text-xs font-bold text-white">{{ u.name }}</h4>
-                                    <span class="text-xs font-bold text-red-500 code-font">{{ u.average_score.toFixed(1) }}分</span>
+                            <div class="flex justify-between items-start border-b border-[#1e222b]/60 pb-3">
+                                <div>
+                                    <h4 class="text-[15px] font-semibold text-white tracking-tight">{{ u.name }}</h4>
+                                    <p class="text-[10px] text-[#9aa8be] mono-font mt-0.5">{{ u.code }} · <span class="normal-case text-gray-400">{{ u.sector }}</span></p>
                                 </div>
-                                <div class="flex gap-1.5 items-center mt-1 text-3xs text-[#8b9bb4] mono-font">
-                                    <span>{{ u.code }}</span>
-                                    <span>·</span>
-                                    <span>{{ u.sector || '未分类' }}</span>
+                                <div class="inline-flex items-center justify-center px-2 py-0.5 border border-[#2a3040] bg-[#11131c] text-[#fb7185] text-lg font-extrabold rounded-none">
+                                    {{ u.average_score.toFixed(1) }}<span class="text-xs ml-0.5">分</span>
                                 </div>
                             </div>
-                            
-                            <div class="mt-3 space-y-1.5 text-3xs">
+
+                            <div class="mt-3 space-y-2 text-3xs">
                                 <div class="flex justify-between items-center">
-                                    <span class="text-[#8b9bb4]">巴菲特 (Value)</span>
-                                    <span :class="u.val_vote === '多头' ? 'text-red-500' : (u.val_vote === '空头' ? 'text-green-500' : 'text-[#8b9bb4]')" class="font-bold">
+                                    <span class="text-gray-500">巴菲特 (价值流派)</span>
+                                    <span :class="u.val_vote === '多头' ? 'text-red-500' : (u.val_vote === '空头' ? 'text-green-500' : 'text-gray-500')" class="font-bold">
                                         {{ u.val_vote }}
                                     </span>
                                 </div>
                                 <div class="flex justify-between items-center">
-                                    <span class="text-[#8b9bb4]">赵老哥 (Momentum)</span>
-                                    <span :class="u.mom_vote === '多头' ? 'text-red-500' : (u.mom_vote === '空头' ? 'text-green-500' : 'text-[#8b9bb4]')" class="font-bold">
+                                    <span class="text-gray-500">赵老哥 (游资接力)</span>
+                                    <span :class="u.mom_vote === '多头' ? 'text-red-500' : (u.mom_vote === '空头' ? 'text-green-500' : 'text-gray-500')" class="font-bold">
                                         {{ u.mom_vote }}
                                     </span>
                                 </div>
-                                <div class="flex justify-between items-center border-t border-[#1e222b]/60 pt-1.5 mt-1.5">
-                                    <span class="text-[#8b9bb4]">Burry (Trap)</span>
+                                <div class="flex justify-between items-center border-t border-[#1e222b]/60 pt-2 mt-2">
+                                    <span class="text-gray-500">大空头 (排雷评级)</span>
                                     <span :class="u.risk_level === '安全' ? 'text-green-400' : 'text-red-400'" class="font-bold">
                                         {{ u.risk_level }}
                                     </span>
                                 </div>
                             </div>
                         </div>
-                        
-                        <div class="text-3xs text-gray-400 bg-[#0e1013] p-2 border border-[#1e222b] rounded-none leading-relaxed font-mono select-all">
+
+                        <div class="text-[11px] text-[#d1d5db] bg-[#0e1117] p-3.5 border border-[#2a3040] rounded-none leading-7 font-mono select-none">
                             {{ u.summary }}
                         </div>
-                        
+
                         <div v-if="u.report_path" class="mt-1">
                             <a :href="u.report_path" target="_blank"
-                               class="block w-full text-center bg-red-950 border border-red-900 text-red-400 hover:bg-red-900 hover:text-white py-1 text-3xs font-bold transition-all font-mono rounded-none">
+                               class="block w-full text-center bg-[#11131c] border border-[#2a3040] text-[#fb7185] hover:bg-[#151923] hover:text-white py-1.5 text-3xs font-bold transition-all active:scale-[0.96]">
                                 查看 UZI 深度诊断报告
                             </a>
                         </div>
@@ -1673,9 +2001,9 @@ def generate_html():
             </div>
 
             <!-- 模拟实战交易账本 -->
-            <div class="border border-[#1e222b] bg-[#0e1013] p-5">
+            <div class="console-card p-6 md:p-8">
                 <div class="border-b border-[#1e222b] pb-2 mb-4 flex justify-between items-center">
-                    <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">模拟实盘交易账本 (Paper Trading Ledger)</span>
+                    <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">模拟实战交易账本 / PORTFOLIO & LEDGER</span>
                     <span class="text-2xs text-yellow-500 font-bold uppercase tracking-wider mono-font">MOCK PAPER TRADING JOURNAL</span>
                 </div>
                 
@@ -1702,7 +2030,7 @@ def generate_html():
                                 暂无持仓股。可在下方股票池中点击“买入”或顶部五强中点击“模拟买入”进行建仓。
                             </div>
                             <div v-for="p in portfolio" :key="p.code" 
-                                 class="bg-[#08090a] p-4 border border-[#1e222b] flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                                 class="bg-[#08090a] p-4 border border-[#1e222b] rounded-none flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                                 <div class="w-full sm:w-1/4">
                                     <h5 class="text-xs font-bold text-white flex items-center gap-1.5">
                                         <span class="w-1.5 h-1.5 bg-red-500 animate-pulse"></span> {{ p.name }}
@@ -1711,21 +2039,21 @@ def generate_html():
                                 </div>
                                 <div class="w-full sm:w-1/2 grid grid-cols-4 gap-2 text-3xs mono-font">
                                     <div>
-                                        <div class="text-[#8b9bb4]">建仓日期/均价</div>
+                                        <div class="text-gray-600">建仓日期/均价</div>
                                         <div class="text-white mt-0.5">{{ p.buy_date.substring(5) }} / {{ p.buy_price.toFixed(2) }}</div>
                                     </div>
                                     <div>
-                                        <div class="text-[#8b9bb4]">持股股数/市值</div>
+                                        <div class="text-gray-600">持股股数/市值</div>
                                         <div class="text-white mt-0.5">{{ p.shares }}股 / {{ (p.shares * getValuationPrice(p.code, p.buy_price)).toFixed(0) }}</div>
                                     </div>
                                     <div>
-                                        <div class="text-[#8b9bb4]">今日估值/盈亏</div>
+                                        <div class="text-gray-600">今日估值/盈亏</div>
                                         <div class="text-white mt-0.5 font-semibold" :class="getPnlColor(p)">
                                             {{ getValuationPrice(p.code, p.buy_price).toFixed(2) }} / {{ getFloatingPnl(p) >= 0 ? '+' : '' }}{{ getFloatingPnl(p).toFixed(0) }}
                                         </div>
                                     </div>
                                     <div>
-                                        <div class="text-[#8b9bb4]">盈亏比例</div>
+                                        <div class="text-gray-600">盈亏比例</div>
                                         <div class="text-white mt-0.5 font-bold" :class="getPnlColor(p)">
                                             {{ getFloatingPnlPct(p) >= 0 ? '+' : '' }}{{ getFloatingPnlPct(p).toFixed(2) }}%
                                         </div>
@@ -1733,11 +2061,11 @@ def generate_html():
                                 </div>
                                 <!-- Exit advice & Sell button -->
                                 <div class="w-full sm:w-1/4 flex flex-col items-end gap-1.5">
-                                    <span class="text-3xs px-2 py-0.5 border" :class="getExitAdvice(p).color">
+                                    <span class="text-3xs px-2 py-0.5 border rounded-none" :class="getExitAdvice(p).color">
                                         {{ getExitAdvice(p).text }}
                                     </span>
                                     <button @click="triggerSell(p)" 
-                                            class="bg-red-950 border border-red-900 text-red-400 hover:bg-red-900 hover:text-white px-3 py-1 text-3xs font-bold transition-all">
+                                            class="bg-red-950 border border-red-900 text-red-400 hover:bg-red-900 hover:text-white px-3 py-1 text-3xs font-bold transition-all active:scale-[0.96]">
                                         虚拟平仓
                                     </button>
                                 </div>
@@ -1746,12 +2074,12 @@ def generate_html():
                         
                         <!-- Tab 2: Trade Log -->
                         <div v-if="ledgerTab === 'log'" class="overflow-x-auto max-h-[300px] overflow-y-auto pr-1">
-                            <div v-if="tradeLog.length === 0" class="text-center py-8 text-[#8b9bb4] text-xs">
+                            <div v-if="tradeLog.length === 0" class="text-center py-8 text-gray-600 text-xs">
                                 暂无历史平仓记录。
                             </div>
                             <table v-else class="w-full text-left text-3xs border-collapse">
                                 <thead>
-                                    <tr class="border-b border-[#1e222b] text-[#8b9bb4] font-bold uppercase tracking-wider bg-[#08090a]">
+                                    <tr class="border-b border-[#1e222b] text-gray-500 font-bold uppercase tracking-wider bg-[#08090a]">
                                         <th class="py-2 px-2">代码</th>
                                         <th class="py-2 px-2">名称</th>
                                         <th class="py-2 px-2">建仓日期/均价</th>
@@ -1824,7 +2152,7 @@ def generate_html():
                         
                         <div class="flex gap-2">
                             <button @click="resetLedger" 
-                                    class="w-full border border-[#1e222b] hover:border-red-500 hover:text-red-400 py-1.5 text-2xs uppercase tracking-wide font-bold transition-all text-[#8b9bb4]">
+                                    class="w-full border border-[#1e222b] hover:border-red-500 hover:text-red-400 py-1.5 text-2xs uppercase tracking-wide font-bold transition-all text-[#8b9bb4] active:scale-[0.98]">
                                 重置模拟账户账本
                             </button>
                         </div>
@@ -1833,9 +2161,9 @@ def generate_html():
             </div>
 
             <!-- Bottom Row: Sector Rotation & Candidate table -->
-            <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <!-- Sector rotation list (1/3) -->
-                <div class="border border-[#1e222b] bg-[#0e1013] p-5 flex flex-col justify-between">
+                <div class="console-card p-6 flex flex-col justify-between">
                     <div class="border-b border-[#1e222b] pb-2 mb-4">
                         <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">热门涨停行业板块</span>
                     </div>
@@ -1844,7 +2172,7 @@ def generate_html():
                              class="bg-[#08090a] p-3 border border-[#1e222b] flex justify-between items-center hover:border-red-500/20 transition-colors duration-200">
                             <div>
                                 <h4 class="text-xs font-bold text-white">{{ sec.name }}</h4>
-                                <p class="text-3xs text-[#8b9bb4] mt-0.5">领涨龙头: {{ sec.leader }}</p>
+                                <p class="text-3xs text-gray-500 mt-0.5">领涨龙头: {{ sec.leader }}</p>
                             </div>
                             <div class="text-right">
                                 <span class="text-lg font-bold text-red-500 code-font">{{ sec.count }}</span>
@@ -1855,7 +2183,7 @@ def generate_html():
                 </div>
 
                 <!-- Candidate Pool table (2/3) -->
-                <div class="lg:col-span-2 border border-[#1e222b] bg-[#0e1013] p-5 flex flex-col justify-between">
+                <div class="lg:col-span-2 console-card p-6 flex flex-col justify-between">
                     <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-[#1e222b] pb-2 mb-4 gap-4">
                         <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">首板候选股票池 (共 {{ currentRecap.candidates.length }} 只)</span>
                         <div class="flex gap-2 w-full sm:w-auto">
@@ -1873,7 +2201,7 @@ def generate_html():
                     <div class="overflow-x-auto max-h-[350px] overflow-y-auto pr-1">
                         <table class="w-full text-left text-3xs border-collapse">
                             <thead>
-                                <tr class="border-b border-[#1e222b] text-[#8b9bb4] font-bold uppercase tracking-wider bg-[#08090a]">
+                                <tr class="border-b border-[#1e222b] text-gray-500 font-bold uppercase tracking-wider bg-[#08090a]">
                                     <th class="py-2.5 px-3">股票代码</th>
                                     <th class="py-2.5 px-3">股票简称</th>
                                     <th class="py-2.5 px-3 text-right">最新价</th>
@@ -1886,7 +2214,6 @@ def generate_html():
                                     <th class="py-2.5 px-3">所属行业</th>
                                     <th class="py-2.5 px-3">题材归因</th>
                                     <th class="py-2.5 px-3 text-center">接力指数</th>
-                                    <th class="py-2.5 px-3 text-center">预估晋级率</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -1897,8 +2224,8 @@ def generate_html():
                                         <div class="flex items-center justify-between">
                                             <span class="font-bold text-white">{{ c.name }}</span>
                                             <button @click.stop="buyStock(c, c.price)" 
-                                                    class="bg-red-950/40 border border-red-900/50 text-red-400 hover:bg-red-900 hover:text-white px-1.5 py-0.5 text-3xs font-semibold select-none transition-all relative after:absolute after:inset-[-10px] after:content-['']">
-                                                模拟买入
+                                                    class="bg-red-950/40 border border-red-900/50 text-red-400 hover:bg-red-900 hover:text-white px-1.5 py-0.5 text-3xs font-semibold select-none transition-all relative after:absolute after:inset-[-10px] after:content-[''] active:scale-[0.95]">
+                                                买入
                                             </button>
                                         </div>
                                     </td>
@@ -1906,29 +2233,21 @@ def generate_html():
                                     <td class="py-2 px-3 text-right code-font">{{ c.turnover.toFixed(2) }}%</td>
                                     <td class="py-2 px-3 text-right code-font">{{ c.first_seal_time_formatted }}</td>
                                     <td class="py-2 px-3 text-center code-font" 
-                                        :class="c.blown_count >= 2 ? 'text-yellow-500 font-bold' : 'text-[#8b9bb4]'">
+                                        :class="c.blown_count >= 2 ? 'text-yellow-500 font-bold' : 'text-gray-500'">
                                         {{ c.blown_count }}
                                     </td>
                                     <td class="py-2 px-3 text-right code-font text-yellow-500">{{ c.seal_funds.toFixed(1) }}万</td>
                                     <td class="py-2 px-3 text-right code-font"
-                                        :class="c.seal_ratio >= 3.0 ? 'text-red-400 font-semibold' : 'text-[#8b9bb4]'">
+                                        :class="c.seal_ratio >= 3.0 ? 'text-red-400 font-semibold' : 'text-gray-500'">
                                         {{ c.seal_ratio.toFixed(2) }}%
                                     </td>
                                     <td class="py-2 px-3 text-right code-font">{{ c.float_mcap.toFixed(1) }}亿</td>
                                     <td class="py-2 px-3 text-gray-300">{{ c.sector }}</td>
-                                    <td class="py-2 px-3 text-[#8b9bb4] max-w-[120px] truncate" :title="c.concept">{{ c.concept || '暂无归因' }}</td>
+                                    <td class="py-2 px-3 text-gray-500 max-w-[120px] truncate" :title="c.concept">{{ c.concept || '暂无归因' }}</td>
                                     <td class="py-2 px-3 text-center">
                                         <span class="code-font px-2 py-0.5 text-3xs font-bold border"
                                               :class="getScoreClass(c.score)">
                                             {{ c.score }}
-                                        </span>
-                                    </td>
-                                    <td class="py-2 px-3 text-center">
-                                        <span v-if="c.pred_prob !== null && c.pred_prob !== undefined" class="code-font text-red-400 font-bold">
-                                            {{ (c.pred_prob * 100).toFixed(1) }}%
-                                        </span>
-                                        <span v-else class="code-font text-[#8b9bb4]">
-                                            暂无
                                         </span>
                                     </td>
                                 </tr>
@@ -1957,21 +2276,6 @@ def generate_html():
                 // Calibration backtest data
                 const calibrationData = ref(window.RECAP_CALIBRATION || []);
 
-                // UZI Audit Data
-                const uziAuditData = ref(window.RECAP_UZI_AUDIT || []);
-                
-                const currentUziAudit = computed(() => {
-                    const list = uziAuditData.value.filter(item => item.date === selectedDate.value);
-                    const candidateCodes = topCandidates.value.map(c => c.code);
-                    return list.filter(item => candidateCodes.includes(item.code))
-                               .sort((a, b) => candidateCodes.indexOf(a.code) - candidateCodes.indexOf(b.code))
-                               .slice(0, 5);
-                });
-                
-                const isUziOnline = computed(() => {
-                    return currentUziAudit.value.some(item => item.report_path !== "");
-                });
-
                 // Interactive Simulator state
                 const simStockCode = ref("");
                 const simOpenType = ref("ideal");
@@ -1988,6 +2292,9 @@ def generate_html():
                 const tradeLog = ref([]);
                 const ledgerTab = ref("portfolio");
 
+                // UZI Audit Data
+                const uziAuditData = ref(window.RECAP_UZI_AUDIT || []);
+
                 const availableDates = computed(() => {
                     return history.value.map(item => item.date);
                 });
@@ -2000,6 +2307,68 @@ def generate_html():
                     if (!currentRecap.value) return [];
                     return currentRecap.value.candidates.slice(0, 5);
                 });
+
+                const currentUziAudit = computed(() => {
+                    const list = uziAuditData.value.filter(item => item.date === selectedDate.value);
+                    const candidateCodes = topCandidates.value.map(c => c.code);
+                    return list.filter(item => candidateCodes.includes(item.code))
+                               .sort((a, b) => candidateCodes.indexOf(a.code) - candidateCodes.indexOf(b.code))
+                               .slice(0, 5);
+                });
+                
+                const themeMediaQuery = window.matchMedia("(prefers-color-scheme: light)");
+                const themeStorageKey = "rtk_recap_theme";
+                const prefersLight = ref(themeMediaQuery.matches);
+                const themeMode = ref("system");
+                const resolvedTheme = computed(() => {
+                    if (themeMode.value === "light" || themeMode.value === "dark") {
+                        return themeMode.value;
+                    }
+                    return prefersLight.value ? "light" : "dark";
+                });
+                const loadTheme = () => {
+                    try {
+                        const storedTheme = localStorage.getItem(themeStorageKey);
+                        if (storedTheme === "system" || storedTheme === "light" || storedTheme === "dark") {
+                            themeMode.value = storedTheme;
+                        }
+                    } catch (error) {}
+                };
+                const saveTheme = () => {
+                    try {
+                        localStorage.setItem(themeStorageKey, themeMode.value);
+                    } catch (error) {}
+                };
+                const applyTheme = () => {
+                    const theme = resolvedTheme.value;
+                    document.body.dataset.theme = theme;
+                    document.documentElement.dataset.theme = theme;
+                    document.body.dataset.themeMode = themeMode.value;
+                    document.documentElement.dataset.themeMode = themeMode.value;
+                };
+                const syncSystemTheme = (event) => {
+                    prefersLight.value = event.matches;
+                };
+                const getChartTheme = () => {
+                    if (resolvedTheme.value === "light") {
+                        return {
+                            grid: "rgba(148, 163, 184, 0.18)",
+                            axis: "#64748b",
+                            promo: "#e11d48",
+                            promoFill: "rgba(225, 29, 72, 0.06)",
+                            limit: "#d97706"
+                        };
+                    }
+                    return {
+                        grid: "rgba(255, 255, 255, 0.05)",
+                        axis: "#8b9bb4",
+                        promo: "#f43f5e",
+                        promoFill: "rgba(244, 63, 94, 0.03)",
+                        limit: "#f59e0b"
+                    };
+                };
+                loadTheme();
+                applyTheme();
 
                 const needleAngle = computed(() => {
                     if (!currentRecap.value) return 0;
@@ -2111,17 +2480,17 @@ def generate_html():
                 const getScoreClass = (score) => {
                     if (score >= 100) return 'bg-red-950 text-red-400 border-red-900';
                     if (score >= 80) return 'bg-yellow-950 text-yellow-400 border-yellow-900';
-                    return 'bg-gray-900 text-[#8b9bb4] border-[#1e222b]';
+                    return 'bg-gray-900 text-gray-500 border-gray-800';
                 };
 
                 // Simulator Logic
                 const simResult = computed(() => {
                     if (!currentRecap.value || !simStockCode.value) {
-                        return { decision: "等待数据", badge: "等待", color: "text-[#8b9bb4]", border: "border-[#1e222b] text-[#8b9bb4]", reason: "请选择一个目标股进行判定。" };
+                        return { decision: "等待数据", badge: "等待", color: "text-gray-500", border: "border-gray-800 text-gray-500", reason: "请选择一个目标股进行判定。" };
                     }
                     const c = currentRecap.value.candidates.find(item => item.code === simStockCode.value);
                     if (!c) {
-                        return { decision: "等待数据", badge: "等待", color: "text-[#8b9bb4]", border: "border-[#1e222b] text-[#8b9bb4]", reason: "标的未找到。" };
+                        return { decision: "等待数据", badge: "等待", color: "text-gray-500", border: "border-gray-800 text-gray-500", reason: "标的未找到。" };
                     }
                     
                     const open = simOpenType.value;
@@ -2132,8 +2501,8 @@ def generate_html():
                         return {
                             decision: "放弃操作 / 观望",
                             badge: "观望",
-                            color: "text-[#8b9bb4]",
-                            border: "border-[#1e222b] text-[#8b9bb4]",
+                            color: "text-gray-400",
+                            border: "border-gray-700 text-gray-400",
                             reason: "【开盘承接走弱】开盘后无量下探且跌破分时均线，买盘无力，套牢盘抛压沉重。即使竞价表现尚可，开盘走弱说明资金不合力，应坚决放弃，避免吃面。"
                         };
                     }
@@ -2174,7 +2543,7 @@ def generate_html():
                                     badge: "强力买点",
                                     color: "text-red-500",
                                     border: "border-red-900 text-red-500",
-                                    reason: "【强势秒板确认】竞价放量且承接强，开盘直线拉升扫板。建议在封死二板瞬间打板买入，买入资金有板块溢价保护，属于连板选手的核心操作。"
+                                    reason: "【强势秒板确认】竞价放量且承接强，开盘直线拉升扫板。建议在封死二板瞬间打板买入，买入资金有板块溢价保护，属于连板选选手队的核心操作。"
                                 };
                             }
                         } else {
@@ -2203,8 +2572,8 @@ def generate_html():
                             return {
                                 decision: "放弃操作",
                                 badge: "放弃",
-                                color: "text-[#8b9bb4]",
-                                border: "border-[#1e222b] text-[#8b9bb4]",
+                                color: "text-gray-500",
+                                border: "border-gray-800 text-gray-500",
                                 reason: "【低开低走走弱】平开或低开且没有放量翻红，资金承接极差，昨日进场资金在疯狂砸盘出逃，直接排除该股接力可能。"
                             };
                         }
@@ -2266,7 +2635,7 @@ def generate_html():
                             }
                         });
                         liveData.value = updatedData;
-                        alert("今日实时竞价数据刷新成功！已经与量化标准自动对齐。");
+                        alert("今日实时竞价数据刷新成功。已经与量化标准自动对齐。");
                         fillSimulatorFromLive();
                     };
                     script.onerror = () => {
@@ -2327,73 +2696,93 @@ def generate_html():
                     localStorage.setItem("rtk_recap_log", JSON.stringify(tradeLog.value));
                 };
 
-                const buyStock = (stock, price) => {
-                    if (portfolio.value.some(item => item.code === stock.code)) {
-                        alert("持仓中已存在该股，请先平仓或进行单笔交易。");
-                        return;
-                    }
-                    
-                    const posSize = 200000;
-                    const actualCost = Math.min(posSize, cash.value);
-                    if (actualCost <= 0) {
-                        alert("可用资金不足，无法建仓。");
-                        return;
-                    }
-                    
-                    const shares = Math.floor(actualCost / price / 100) * 100;
-                    if (shares <= 0) {
-                        alert("可用资金不足以买入一手（100股）。");
-                        return;
-                    }
-                    
-                    const totalCost = shares * price;
-                    cash.value -= totalCost;
-                    
-                    portfolio.value.push({
-                        code: stock.code,
-                        name: stock.name,
-                        buy_date: selectedDate.value,
-                        buy_price: price,
-                        shares: shares,
-                        sector: stock.sector
-                    });
-                    
-                    saveLedger();
-                    alert(`虚拟建仓成功！以 ${price.toFixed(2)}元 买入 ${stock.name} ${shares}股，总计金额 ${totalCost.toFixed(0)}元。`);
-                };
+                const initChart = () => {
+                    const ctx = document.getElementById('trendChart');
+                    if (!ctx) return;
 
-                const triggerSell = (holding) => {
-                    const price = getValuationPrice(holding.code, holding.buy_price);
-                    if (confirm(`确认以今日收盘估值 ${price.toFixed(2)}元 进行虚拟平仓吗？`)) {
-                        sellStock(holding.code, price);
-                    }
-                };
+                    const chartTheme = getChartTheme();
 
-                const sellStock = (code, price) => {
-                    const idx = portfolio.value.findIndex(item => item.code === code);
-                    if (idx === -1) return;
+                    // Get last 15 elements in chronological order (oldest to newest)
+                    const last15 = [...history.value].slice(0, 15).reverse();
                     
-                    const item = portfolio.value[idx];
-                    const revenue = item.shares * price;
-                    cash.value += revenue;
-                    
-                    const pnl = revenue - (item.shares * item.buy_price);
-                    const pnl_pct = (pnl / (item.shares * item.buy_price)) * 100;
-                    
-                    tradeLog.value.push({
-                        code: item.code,
-                        name: item.name,
-                        buy_date: item.buy_date,
-                        buy_price: item.buy_price,
-                        sell_date: selectedDate.value,
-                        sell_price: price,
-                        shares: item.shares,
-                        pnl: pnl,
-                        pnl_pct: pnl_pct
-                    });
-                    
-                    portfolio.value.splice(idx, 1);
-                    saveLedger();
+                    const labels = last15.map(item => item.date.substring(5)); // just MM-DD
+                    const rates = last15.map(item => item.market.promotion_rate);
+                    const luCounts = last15.map(item => item.market.limit_ups);
+
+                    if (chartInstance) {
+                        chartInstance.data.labels = labels;
+                        chartInstance.data.datasets[0].data = rates;
+                        chartInstance.data.datasets[1].data = luCounts;
+                        chartInstance.update();
+                    } else {
+                        chartInstance = new Chart(ctx, {
+                            type: 'line',
+                            data: {
+                                labels: labels,
+                                datasets: [
+                                    {
+                                        label: '1进2晋级率 (%)',
+                                        data: rates,
+                                        borderColor: chartTheme.promo,
+                                        backgroundColor: chartTheme.promoFill,
+                                        borderWidth: 1.5,
+                                        pointRadius: 2,
+                                        tension: 0.2,
+                                        yAxisID: 'y1',
+                                    },
+                                    {
+                                        label: '总涨停数',
+                                        data: luCounts,
+                                        borderColor: chartTheme.limit,
+                                        backgroundColor: 'transparent',
+                                        borderWidth: 1,
+                                        borderDash: [3, 3],
+                                        pointRadius: 0,
+                                        tension: 0.2,
+                                        yAxisID: 'y2',
+                                    }
+                                ]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                plugins: {
+                                    legend: {
+                                        labels: {
+                                            color: chartTheme.axis,
+                                            boxWidth: 12,
+                                            font: { size: 9, family: 'Fira Code' }
+                                        }
+                                    }
+                                },
+                                scales: {
+                                    x: {
+                                        grid: { color: chartTheme.grid },
+                                        ticks: { color: chartTheme.axis, font: { size: 8, family: 'Fira Code' } }
+                                    },
+                                    y1: {
+                                        type: 'linear',
+                                        position: 'left',
+                                        grid: { color: chartTheme.grid },
+                                        ticks: { 
+                                            color: chartTheme.promo, 
+                                            font: { size: 8, family: 'Fira Code' },
+                                            callback: (value) => value + '%'
+                                        },
+                                        min: 0,
+                                        max: Math.max(...rates, 20) + 5
+                                    },
+                                    y2: {
+                                        type: 'linear',
+                                        position: 'right',
+                                        grid: { drawOnChartArea: false },
+                                        ticks: { color: chartTheme.limit, font: { size: 8, family: 'Fira Code' } },
+                                        min: 0
+                                    }
+                                }
+                            }
+                        });
+                    }
                 };
 
                 const getValuationPrice = (code, buyPrice) => {
@@ -2419,7 +2808,7 @@ def generate_html():
                 };
 
                 const getExitAdvice = (holding) => {
-                    if (!currentRecap.value) return { text: "监控中", color: "border-[#1e222b] text-[#8b9bb4]" };
+                    if (!currentRecap.value) return { text: "监控中", color: "border-gray-800 text-gray-500" };
                     const isZt = currentRecap.value.candidates.some(item => item.code === holding.code);
                     if (holding.buy_date === selectedDate.value) {
                         return { text: "今日建仓 / 持股中", color: "border-yellow-500/20 text-yellow-500 bg-yellow-500/5" };
@@ -2479,74 +2868,90 @@ def generate_html():
                         chartInstance.update();
                     } else {
                         chartInstance = new Chart(ctx, {
-                        type: 'line',
-                        data: {
-                            labels: labels,
-                            datasets: [
-                                {
-                                    label: '1进2晋级率 (%)',
-                                    data: rates,
-                                    borderColor: '#ef4444',
-                                    backgroundColor: 'rgba(239, 68, 68, 0.05)',
-                                    borderWidth: 1.5,
-                                    pointRadius: 2,
-                                    tension: 0.2,
-                                    yAxisID: 'y1',
+                            type: 'line',
+                            data: {
+                                labels: labels,
+                                datasets: [
+                                    {
+                                        label: '1进2晋级率 (%)',
+                                        data: rates,
+                                        borderColor: '#f43f5e',
+                                        backgroundColor: 'rgba(244, 63, 94, 0.03)',
+                                        borderWidth: 1.5,
+                                        pointRadius: 2,
+                                        tension: 0.2,
+                                        yAxisID: 'y1',
+                                    },
+                                    {
+                                        label: '总涨停数',
+                                        data: luCounts,
+                                        borderColor: '#f59e0b',
+                                        backgroundColor: 'transparent',
+                                        borderWidth: 1,
+                                        borderDash: [3, 3],
+                                        pointRadius: 0,
+                                        tension: 0.2,
+                                        yAxisID: 'y2',
+                                    }
+                                ]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                plugins: {
+                                    legend: {
+                                        labels: {
+                                            color: '#8b9bb4',
+                                            boxWidth: 12,
+                                            font: { size: 9, family: 'Fira Code' }
+                                        }
+                                    }
                                 },
-                                {
-                                    label: '总涨停数',
-                                    data: luCounts,
-                                    borderColor: '#eab308',
-                                    backgroundColor: 'transparent',
-                                    borderWidth: 1,
-                                    borderDash: [3, 3],
-                                    pointRadius: 0,
-                                    tension: 0.2,
-                                    yAxisID: 'y2',
-                                }
-                            ]
-                        },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            plugins: {
-                                legend: {
-                                    labels: {
-                                        color: '#8b9bb4',
-                                        boxWidth: 12,
-                                        font: { size: 9, family: 'Fira Code' }
+                                scales: {
+                                    x: {
+                                        grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                                        ticks: { color: '#8b9bb4', font: { size: 8, family: 'Fira Code' } }
+                                    },
+                                    y1: {
+                                        type: 'linear',
+                                        position: 'left',
+                                        grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                                        ticks: { 
+                                            color: '#f43f5e', 
+                                            font: { size: 8, family: 'Fira Code' },
+                                            callback: (value) => value + '%'
+                                        },
+                                        min: 0,
+                                        max: Math.max(...rates, 20) + 5
+                                    },
+                                    y2: {
+                                        type: 'linear',
+                                        position: 'right',
+                                        grid: { drawOnChartArea: false },
+                                        ticks: { color: '#f59e0b', font: { size: 8, family: 'Fira Code' } },
+                                        min: 0
                                     }
                                 }
-                            },
-                            scales: {
-                                x: {
-                                    grid: { color: '#1e222b' },
-                                    ticks: { color: '#8b9bb4', font: { size: 8, family: 'Fira Code' } }
-                                },
-                                y1: {
-                                    type: 'linear',
-                                    position: 'left',
-                                    grid: { color: '#1e222b' },
-                                    ticks: { 
-                                        color: '#ef4444', 
-                                        font: { size: 8, family: 'Fira Code' },
-                                        callback: (value) => value + '%'
-                                    },
-                                    min: 0,
-                                    max: Math.max(...rates, 20) + 5
-                                },
-                                y2: {
-                                    type: 'linear',
-                                    position: 'right',
-                                    grid: { drawOnChartArea: false },
-                                    ticks: { color: '#eab308', font: { size: 8, family: 'Fira Code' } },
-                                    min: 0
-                                }
                             }
-                        }
-                    });
+                        });
                     }
                 };
+
+                watch(themeMode, () => {
+                    saveTheme();
+                    applyTheme();
+                });
+
+                watch(resolvedTheme, () => {
+                    applyTheme();
+                    nextTick(() => {
+                        if (chartInstance) {
+                            chartInstance.destroy();
+                            chartInstance = null;
+                        }
+                        initChart();
+                    });
+                });
 
                 watch(selectedDate, () => {
                     nextTick(() => {
@@ -2561,10 +2966,15 @@ def generate_html():
 
                 onMounted(() => {
                     loadLedger();
+                    if (themeMediaQuery.addEventListener) {
+                        themeMediaQuery.addEventListener("change", syncSystemTheme);
+                    } else if (themeMediaQuery.addListener) {
+                        themeMediaQuery.addListener(syncSystemTheme);
+                    }
+                    applyTheme();
                     lucide.createIcons();
                     initChart();
                     initSimStock();
-                    console.log("Vue app mounted successfully!");
                 });
 
                 return {
@@ -2573,6 +2983,8 @@ def generate_html():
                     availableDates,
                     currentRecap,
                     topCandidates,
+                    currentUziAudit,
+                    isUziOnline,
                     needleAngle,
                     sentimentColorClass,
                     searchQuery,
@@ -2580,15 +2992,13 @@ def generate_html():
                     filteredCandidates,
                     getScoreClass,
                     calibrationData,
-                    uziAuditData,
-                    currentUziAudit,
-                    isUziOnline,
                     simStockCode,
                     simOpenType,
                     simVolType,
                     simTrendType,
                     simResult,
                     simTimePhase,
+                    themeMode,
                     activeTimePhase,
                     liveData,
                     fetchLiveQuotes,
@@ -2610,17 +3020,13 @@ def generate_html():
                     portfolioValue,
                     totalEquity,
                     totalPnl,
-                    winRate,
-                    initSimStock,
-                    loadLedger,
-                    saveLedger
+                    winRate
                 };
             }
         }).mount('#app');
     </script>
 </body>
-</html>
-"""
+</html>"""
     with open(HTML_PATH, "w", encoding="utf-8") as f:
         f.write(html_content)
     print(f"HTML generated at {HTML_PATH}")
