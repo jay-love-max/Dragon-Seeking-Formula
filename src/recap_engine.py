@@ -1174,14 +1174,14 @@ def generate_html():
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>A股 1进2 接力复盘控制台</title>
-    <!-- Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Local vendor assets for offline-friendly rendering -->
+    <script src="assets/vendor/tailwind.min.js"></script>
     <!-- Vue 3 -->
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="assets/vendor/vue.global.js"></script>
     <!-- Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="assets/vendor/chart.umd.min.js"></script>
     <!-- Lucide Icons -->
-    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="assets/vendor/lucide.min.js"></script>
     <!-- Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;700&family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
@@ -2315,6 +2315,10 @@ def generate_html():
                                .sort((a, b) => candidateCodes.indexOf(a.code) - candidateCodes.indexOf(b.code))
                                .slice(0, 5);
                 });
+                const isUziOnline = computed(() => {
+                    return currentUziAudit.value.some(item => item.report_path !== "");
+                });
+
                 
                 const themeMediaQuery = window.matchMedia("(prefers-color-scheme: light)");
                 const themeStorageKey = "rtk_recap_theme";
@@ -2784,6 +2788,75 @@ def generate_html():
                         });
                     }
                 };
+                const buyStock = (stock, price) => {
+                    if (portfolio.value.some(item => item.code === stock.code)) {
+                        alert("持仓中已存在该股，请先平仓或进行单笔交易。");
+                        return;
+                    }
+                    
+                    const posSize = 200000;
+                    const actualCost = Math.min(posSize, cash.value);
+                    if (actualCost <= 0) {
+                        alert("可用资金不足，无法建仓。");
+                        return;
+                    }
+                    
+                    const shares = Math.floor(actualCost / price / 100) * 100;
+                    if (shares <= 0) {
+                        alert("可用资金不足以买入一手（100股）。");
+                        return;
+                    }
+                    
+                    const totalCost = shares * price;
+                    cash.value -= totalCost;
+                    
+                    portfolio.value.push({
+                        code: stock.code,
+                        name: stock.name,
+                        buy_date: selectedDate.value,
+                        buy_price: price,
+                        shares: shares,
+                        sector: stock.sector
+                    });
+                    
+                    saveLedger();
+                    alert(`虚拟建仓成功。以 ${price.toFixed(2)}元 买入 ${stock.name} ${shares}股，总计金额 ${totalCost.toFixed(0)}元。`);
+                };
+
+                const triggerSell = (holding) => {
+                    const price = getValuationPrice(holding.code, holding.buy_price);
+                    if (confirm(`确认以今日收盘估值 ${price.toFixed(2)}元 进行虚拟平仓吗？`)) {
+                        sellStock(holding.code, price);
+                    }
+                };
+
+                const sellStock = (code, price) => {
+                    const idx = portfolio.value.findIndex(item => item.code === code);
+                    if (idx === -1) return;
+                    
+                    const item = portfolio.value[idx];
+                    const revenue = item.shares * price;
+                    cash.value += revenue;
+                    
+                    const pnl = revenue - (item.shares * item.buy_price);
+                    const pnl_pct = (pnl / (item.shares * item.buy_price)) * 100;
+                    
+                    tradeLog.value.push({
+                        code: item.code,
+                        name: item.name,
+                        buy_date: item.buy_date,
+                        buy_price: item.buy_price,
+                        sell_date: selectedDate.value,
+                        sell_price: price,
+                        shares: item.shares,
+                        pnl: pnl,
+                        pnl_pct: pnl_pct
+                    });
+                    
+                    portfolio.value.splice(idx, 1);
+                    saveLedger();
+                };
+
 
                 const getValuationPrice = (code, buyPrice) => {
                     if (!currentRecap.value) return buyPrice;
@@ -2850,92 +2923,6 @@ def generate_html():
                     return (wins / tradeLog.value.length) * 100;
                 });
 
-                const initChart = () => {
-                    const ctx = document.getElementById('trendChart');
-                    if (!ctx) return;
-
-                    // Get last 15 elements in chronological order (oldest to newest)
-                    const last15 = [...history.value].slice(0, 15).reverse();
-                    
-                    const labels = last15.map(item => item.date.substring(5)); // just MM-DD
-                    const rates = last15.map(item => item.market.promotion_rate);
-                    const luCounts = last15.map(item => item.market.limit_ups);
-
-                    if (chartInstance) {
-                        chartInstance.data.labels = labels;
-                        chartInstance.data.datasets[0].data = rates;
-                        chartInstance.data.datasets[1].data = luCounts;
-                        chartInstance.update();
-                    } else {
-                        chartInstance = new Chart(ctx, {
-                            type: 'line',
-                            data: {
-                                labels: labels,
-                                datasets: [
-                                    {
-                                        label: '1进2晋级率 (%)',
-                                        data: rates,
-                                        borderColor: '#f43f5e',
-                                        backgroundColor: 'rgba(244, 63, 94, 0.03)',
-                                        borderWidth: 1.5,
-                                        pointRadius: 2,
-                                        tension: 0.2,
-                                        yAxisID: 'y1',
-                                    },
-                                    {
-                                        label: '总涨停数',
-                                        data: luCounts,
-                                        borderColor: '#f59e0b',
-                                        backgroundColor: 'transparent',
-                                        borderWidth: 1,
-                                        borderDash: [3, 3],
-                                        pointRadius: 0,
-                                        tension: 0.2,
-                                        yAxisID: 'y2',
-                                    }
-                                ]
-                            },
-                            options: {
-                                responsive: true,
-                                maintainAspectRatio: false,
-                                plugins: {
-                                    legend: {
-                                        labels: {
-                                            color: '#8b9bb4',
-                                            boxWidth: 12,
-                                            font: { size: 9, family: 'Fira Code' }
-                                        }
-                                    }
-                                },
-                                scales: {
-                                    x: {
-                                        grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                                        ticks: { color: '#8b9bb4', font: { size: 8, family: 'Fira Code' } }
-                                    },
-                                    y1: {
-                                        type: 'linear',
-                                        position: 'left',
-                                        grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                                        ticks: { 
-                                            color: '#f43f5e', 
-                                            font: { size: 8, family: 'Fira Code' },
-                                            callback: (value) => value + '%'
-                                        },
-                                        min: 0,
-                                        max: Math.max(...rates, 20) + 5
-                                    },
-                                    y2: {
-                                        type: 'linear',
-                                        position: 'right',
-                                        grid: { drawOnChartArea: false },
-                                        ticks: { color: '#f59e0b', font: { size: 8, family: 'Fira Code' } },
-                                        min: 0
-                                    }
-                                }
-                            }
-                        });
-                    }
-                };
 
                 watch(themeMode, () => {
                     saveTheme();
