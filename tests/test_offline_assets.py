@@ -16,6 +16,11 @@ import render_fragments
 
 
 def load_recap_engine_module():
+    import importlib
+
+    importlib.invalidate_caches()
+    sys.modules.pop("render_fragments", None)
+    fresh_render_fragments = importlib.import_module("render_fragments")
     stubs = {
         "mootdx": types.ModuleType("mootdx"),
         "mootdx.quotes": types.ModuleType("mootdx.quotes"),
@@ -33,6 +38,7 @@ def load_recap_engine_module():
         spec.loader.exec_module(module)
         return module
     finally:
+        sys.modules["render_fragments"] = fresh_render_fragments
         for name, module in original.items():
             if module is None:
                 sys.modules.pop(name, None)
@@ -55,6 +61,14 @@ class OfflineAssetsTest(unittest.TestCase):
         self.assertIn('const getChartTheme = () => {', js)
         self.assertIn('promoFill: "rgba(225, 29, 72, 0.06)"', js)
         self.assertIn('document.body.dataset.theme = theme;', js)
+
+    def test_theme_styles_helper_keeps_light_tokens(self):
+        css = render_fragments.render_theme_styles()
+        self.assertIn('body[data-theme="light"] {', css)
+        self.assertIn('background: radial-gradient(circle at top left', css)
+        self.assertIn('body[data-theme="light"] .console-card {', css)
+        self.assertIn('body[data-theme="light"] #app [class*="text-white"] {', css)
+        self.assertIn('body[data-theme="light"] #app select,', css)
 
     def test_generated_html_uses_local_vendor_assets(self):
         module = load_recap_engine_module()
