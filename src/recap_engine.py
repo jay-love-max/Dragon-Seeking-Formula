@@ -8,6 +8,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from mootdx.quotes import Quotes
 import akshare as ak
+from sklearn.ensemble import RandomForestClassifier
 
 # Base Paths
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -116,6 +117,123 @@ def get_previous_trading_day(date_str, trade_dates):
     if smaller_dates:
         return max(smaller_dates)
     return None
+
+def time_to_seconds(time_str):
+    """Convert HHMMSS string to seconds since 09:25:00"""
+    try:
+        t = str(time_str).zfill(6)
+        hours = int(t[:2])
+        minutes = int(t[2:4])
+        seconds = int(t[4:])
+        
+        # Calculate seconds from midnight
+        total_seconds = hours * 3600 + minutes * 60 + seconds
+        
+        # 09:25:00 in seconds is 9*3600 + 25*60 = 33900
+        ref_seconds = 9 * 3600 + 25 * 60
+        
+        return total_seconds - ref_seconds
+    except Exception:
+        return 0
+
+def preprocess_features(df, sector_encoding):
+    """Convert raw candidate and market features to numerical features for model training/inference"""
+    df = df.copy()
+    # Convert first_seal_time to seconds since 09:25:00
+    df["seal_time_sec"] = df["first_seal_time"].apply(time_to_seconds)
+    
+    # Map sentiment to numeric
+    sentiment_map = {
+        "极度活跃": 5,
+        "活跃": 4,
+        "中性": 3,
+        "低迷降温": 2,
+        "恐慌冰点": 1,
+        "观望低频": 0
+    }
+    df["sentiment_num"] = df["sentiment"].map(sentiment_map).fillna(3)
+    
+    # Target encode sector
+    means = sector_encoding.get("means", {})
+    global_mean = sector_encoding.get("global_mean", 0.0)
+    df["sector_encoded"] = df["sector"].map(means).fillna(global_mean)
+    
+    # Select feature columns
+    feature_cols = [
+        "price", "change_pct", "turnover", "float_mcap", "seal_funds", "seal_ratio",
+        "seal_time_sec", "blown_count", "score", "sh_change", "sz_change", "cy_change",
+        "total_turnover", "limit_ups", "limit_downs", "promotion_rate", "sentiment_num",
+        "sector_encoded"
+    ]
+    
+    X = df[feature_cols].copy()
+    # Fill any remaining NaNs with 0
+    X = X.fillna(0.0)
+    return X
+
+def get_training_features(conn, date_str):
+    """Query historical candidates & limit_ups_archive prior to date_str, target encode sectors, merge market sentiment, and return features/targets"""
+    # Query candidates prior to date_str with consecutive_boards = 1
+    query_cands = """
+        SELECT 
+            c.date, c.code, c.price, c.change_pct, c.turnover, c.float_mcap,
+            c.seal_funds, c.seal_ratio, c.first_seal_time, c.blown_count,
+            c.score, c.sector,
+            m.sh_change, m.sz_change, m.cy_change, m.total_turnover,
+            m.limit_ups, m.limit_downs, m.promotion_rate, m.sentiment
+        FROM candidates c
+        JOIN market_recap m ON c.date = m.date
+        WHERE c.date < ? AND c.consecutive_boards = 1
+    """
+    df_cands = pd.read_sql_query(query_cands, conn, params=(date_str,))
+    
+    # Query limit_ups_archive prior to date_str with consecutive_boards = 2
+    query_archive = """
+        SELECT date, code FROM limit_ups_archive 
+        WHERE date < ? AND consecutive_boards = 2
+    """
+    df_archive = pd.read_sql_query(query_archive, conn, params=(date_str,))
+    
+    if df_cands.empty:
+        return pd.DataFrame(), pd.Series(), {}
+        
+    df_dates = pd.read_sql_query(
+        "SELECT DISTINCT date FROM market_recap WHERE date < ? ORDER BY date ASC",
+        conn,
+        params=(date_str,)
+    )
+    all_dates = df_dates["date"].tolist()
+    date_to_next = {all_dates[i]: all_dates[i+1] for i in range(len(all_dates) - 1)}
+    
+    promoted_keys = set(zip(df_archive["date"], df_archive["code"]))
+    
+    y_list = []
+    valid_indices = []
+    for idx, row in df_cands.iterrows():
+        curr_date = row["date"]
+        code = row["code"]
+        if curr_date in date_to_next:
+            next_date = date_to_next[curr_date]
+            is_promoted = 1 if (next_date, code) in promoted_keys else 0
+            y_list.append(is_promoted)
+            valid_indices.append(idx)
+            
+    df_cands = df_cands.iloc[valid_indices].copy()
+    y_train = pd.Series(y_list, index=df_cands.index)
+    
+    # Target encoding on sectors
+    df_cands["target"] = y_train
+    sector_means = df_cands.groupby("sector")["target"].mean().to_dict()
+    global_mean = y_train.mean() if not y_train.empty else 0.0
+    sector_encoding = {
+        "means": sector_means,
+        "global_mean": global_mean
+    }
+    
+    # Preprocess features
+    X_train = preprocess_features(df_cands, sector_encoding)
+    
+    return X_train, y_train, sector_encoding
 
 def get_index_recap(date_str):
     """Retrieve close prices and daily change % of A-share major indices and total turnover"""
@@ -295,8 +413,8 @@ def run_recap(date_str, trade_dates):
     
     # Save today's 1-board candidates list to determine tomorrow's promotion
     # Let's filter for 1-board (连板数 == 1)
-    df_1b = df_zt[df_zt["连板数"] == 1].copy()
-    print(f"Total 1-board (首板) candidates: {len(df_1b)}")
+    # Let's filter for 1-board (连板数 == 1) and reset index
+    df_1b = df_zt[df_zt["连板数"] == 1].copy().reset_index(drop=True)
     
     # Calculate 1进2 Relay Score for each 1-board stock
     scores = []
@@ -472,6 +590,68 @@ def run_recap(date_str, trade_dates):
     elif total_lu <= 40:
         sentiment_label = "观望低频"
         
+    # 8.5 ML Model Training & Prediction
+    print("Initializing Machine Learning Pipeline...")
+    conn_ml = sqlite3.connect(DB_PATH)
+    pred_probs = [None] * len(df_1b)
+    try:
+        X_train, y_train, sector_encoding = get_training_features(conn_ml, date_str)
+        print(f"[ML Model] Training samples: {len(X_train)}")
+        
+        if len(X_train) >= 30:
+            classes = np.unique(y_train)
+            if len(classes) >= 2:
+                model = RandomForestClassifier(n_estimators=150, max_depth=6, min_samples_leaf=2, random_state=42)
+                model.fit(X_train, y_train)
+                print("[ML Model] Trained successfully")
+                
+                # Log feature importances
+                importances = model.feature_importances_
+                feature_names = X_train.columns
+                importance_df = pd.DataFrame({"Feature": feature_names, "Importance": importances})
+                importance_df = importance_df.sort_values(by="Importance", ascending=False)
+                print("Feature importances ranking:")
+                for _, r in importance_df.iterrows():
+                    print(f"  {r['Feature']}: {r['Importance']:.4f}")
+                    
+                # Preprocess today's candidates
+                df_pred = pd.DataFrame()
+                df_pred["price"] = df_1b["最新价"].astype(float)
+                df_pred["change_pct"] = df_1b["涨跌幅"].astype(float)
+                df_pred["turnover"] = df_1b["换手率"].astype(float)
+                
+                raw_mcap = df_1b["流通市值"].astype(float)
+                raw_seal = df_1b["封板资金"].astype(float)
+                df_pred["float_mcap"] = (raw_mcap / 1e9).round(2)
+                df_pred["seal_funds"] = (raw_seal / 1e6).round(2)
+                df_pred["seal_ratio"] = ((raw_seal / raw_mcap) * 100).where(raw_mcap > 0, 0.0).round(2)
+                df_pred["first_seal_time"] = df_1b["首次封板时间"].astype(str).str.zfill(6)
+                df_pred["blown_count"] = df_1b["炸板次数"].astype(int)
+                df_pred["score"] = df_1b["接力指数"].astype(int)
+                df_pred["sector"] = df_1b["所属行业"]
+                
+                df_pred["sh_change"] = idx_recap.get("sh", {}).get("change", 0.0)
+                df_pred["sz_change"] = idx_recap.get("sz", {}).get("change", 0.0)
+                df_pred["cy_change"] = idx_recap.get("cy", {}).get("change", 0.0)
+                df_pred["total_turnover"] = idx_recap.get("total_turnover", 0.0)
+                df_pred["limit_ups"] = total_lu
+                df_pred["limit_downs"] = limit_downs
+                df_pred["promotion_rate"] = promotion_rate
+                df_pred["sentiment"] = sentiment_label
+                
+                X_pred = preprocess_features(df_pred, sector_encoding)
+                probs = model.predict_proba(X_pred)[:, 1]
+                pred_probs = [round(float(p), 4) for p in probs]
+            elif len(classes) == 1:
+                print(f"[ML Model] Trained with single class: {classes[0]}")
+                pred_probs = [float(classes[0])] * len(df_1b)
+        else:
+            print(f"[ML Model] Fallback to None predictions (samples {len(X_train)} < 30)")
+    except Exception as e:
+        print(f"Error in ML Pipeline: {e}")
+    finally:
+        conn_ml.close()
+
     # 9. Save to Database
     print("Writing recap details to SQLite database...")
     conn = sqlite3.connect(DB_PATH)
@@ -524,8 +704,8 @@ def run_recap(date_str, trade_dates):
             INSERT INTO candidates (
                 date, code, name, price, change_pct, turnover, float_mcap, seal_funds,
                 seal_ratio, first_seal_time, blown_count, consecutive_boards, sector,
-                concept, score, playbook
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                concept, score, playbook, pred_prob
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             date_str,
             row["代码"],
@@ -542,7 +722,8 @@ def run_recap(date_str, trade_dates):
             row["所属行业"],
             row["题材归因"],
             int(row["接力指数"]),
-            row["操作建议"]
+            row["操作建议"],
+            pred_probs[idx] if pred_probs[idx] is not None else None
         ))
         
     conn.commit()
@@ -622,12 +803,7 @@ def export_data():
     # Fetch last 150 market recaps
     cursor.execute("SELECT * FROM market_recap ORDER BY date DESC LIMIT 150")
     recap_rows = cursor.fetchall()
-    
-    recap_cols = [
-        "date", "sh_price", "sh_change", "sz_price", "sz_change", "cy_price", "cy_change",
-        "total_turnover", "limit_ups", "limit_downs", "promotion_rate", "hgt_flow", "sgt_flow",
-        "sentiment", "sector_ranking"
-    ]
+    recap_cols = [desc[0] for desc in cursor.description]
     
     history_list = []
     for row in recap_rows:
@@ -643,12 +819,7 @@ def export_data():
         date_str = recap_dict["date"]
         cursor.execute("SELECT * FROM candidates WHERE date = ? ORDER BY score DESC", (date_str,))
         candidate_rows = cursor.fetchall()
-        
-        candidate_cols = [
-            "date", "code", "name", "price", "change_pct", "turnover", "float_mcap",
-            "seal_funds", "seal_ratio", "first_seal_time", "blown_count", "consecutive_boards",
-            "sector", "concept", "score", "playbook"
-        ]
+        candidate_cols = [desc[0] for desc in cursor.description]
         
         candidates_list = []
         for c_row in candidate_rows:
