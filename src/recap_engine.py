@@ -1138,7 +1138,12 @@ def export_data():
         history_list.append(recap_data)
         
     # Fetch UZI audit records
-    cursor.execute("SELECT * FROM uzi_audit ORDER BY date DESC")
+    cursor.execute("""
+        SELECT uzi_audit.*, candidates.sector 
+        FROM uzi_audit 
+        LEFT JOIN candidates ON uzi_audit.date = candidates.date AND uzi_audit.code = candidates.code 
+        ORDER BY uzi_audit.date DESC
+    """)
     uzi_rows = cursor.fetchall()
     uzi_cols = [desc[0] for desc in cursor.description]
     
@@ -1603,11 +1608,11 @@ def generate_html():
             </div>
 
             <!-- UZI 智能评委席报告 -->
-            <div class="border border-[#1e222b] bg-[#0e1013] p-5">
+            <div class="border border-[#1e222b] bg-[#0e1013] p-5 rounded-none">
                 <div class="border-b border-[#1e222b] pb-2 mb-4 flex justify-between items-center">
-                    <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">UZI 智能评委席报告 / JURY AUDIT REPORT</span>
+                    <span class="text-[#8b9bb4] text-2xs uppercase tracking-wider font-semibold">■ UZI 智能评委席报告 / UZI JURY AUDIT REPORT</span>
                     <div class="flex items-center gap-2">
-                        <span class="text-3xs px-2 py-0.5 border"
+                        <span class="text-3xs px-2 py-0.5 border rounded-none"
                               :class="isUziOnline ? 'border-green-900 bg-green-950/20 text-green-400' : 'border-yellow-900 bg-yellow-950/20 text-yellow-400'">
                             {{ isUziOnline ? '大模型智能评审模式' : '本地财务规则模拟' }}
                         </span>
@@ -1617,31 +1622,35 @@ def generate_html():
                 
                 <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
                     <div v-for="u in currentUziAudit" :key="u.code" 
-                         class="bg-[#08090a] p-4 border border-[#1e222b] flex flex-col justify-between gap-4">
+                         class="bg-[#08090a] p-4 border border-[#1e222b] rounded-none flex flex-col justify-between gap-4">
                         <div>
-                            <div class="flex justify-between items-start border-b border-[#1e222b]/80 pb-2">
-                                <div>
-                                    <h4 class="text-sm font-bold text-white">{{ u.name }}</h4>
-                                    <p class="text-3xs text-gray-500 mono-font mt-0.5">{{ u.code }}</p>
+                            <div class="border-b border-[#1e222b]/80 pb-2">
+                                <div class="flex justify-between items-center">
+                                    <h4 class="text-xs font-bold text-white">{{ u.name }}</h4>
+                                    <span class="text-xs font-bold text-red-500 code-font">{{ u.average_score.toFixed(1) }}分</span>
                                 </div>
-                                <span class="text-lg font-bold text-red-500 code-font">{{ u.average_score.toFixed(1) }}分</span>
+                                <div class="flex gap-1.5 items-center mt-1 text-3xs text-[#8b9bb4] mono-font">
+                                    <span>{{ u.code }}</span>
+                                    <span>·</span>
+                                    <span>{{ u.sector || '未分类' }}</span>
+                                </div>
                             </div>
                             
                             <div class="mt-3 space-y-1.5 text-3xs">
                                 <div class="flex justify-between items-center">
-                                    <span class="text-gray-500">巴菲特 (价值流派)</span>
-                                    <span :class="u.val_vote === '多头' ? 'text-red-500' : (u.val_vote === '空头' ? 'text-green-500' : 'text-gray-500')" class="font-bold">
+                                    <span class="text-[#8b9bb4]">巴菲特 (Value)</span>
+                                    <span :class="u.val_vote === '多头' ? 'text-red-500' : (u.val_vote === '空头' ? 'text-green-500' : 'text-[#8b9bb4]')" class="font-bold">
                                         {{ u.val_vote }}
                                     </span>
                                 </div>
                                 <div class="flex justify-between items-center">
-                                    <span class="text-gray-500">赵老哥 (游资接力)</span>
-                                    <span :class="u.mom_vote === '多头' ? 'text-red-500' : (u.mom_vote === '空头' ? 'text-green-500' : 'text-gray-500')" class="font-bold">
+                                    <span class="text-[#8b9bb4]">赵老哥 (Momentum)</span>
+                                    <span :class="u.mom_vote === '多头' ? 'text-red-500' : (u.mom_vote === '空头' ? 'text-green-500' : 'text-[#8b9bb4]')" class="font-bold">
                                         {{ u.mom_vote }}
                                     </span>
                                 </div>
                                 <div class="flex justify-between items-center border-t border-[#1e222b]/60 pt-1.5 mt-1.5">
-                                    <span class="text-gray-500">大空头 (排雷评级)</span>
+                                    <span class="text-[#8b9bb4]">Burry (Trap)</span>
                                     <span :class="u.risk_level === '安全' ? 'text-green-400' : 'text-red-400'" class="font-bold">
                                         {{ u.risk_level }}
                                     </span>
@@ -1649,13 +1658,13 @@ def generate_html():
                             </div>
                         </div>
                         
-                        <div class="text-3xs text-gray-400 bg-[#0e1013] p-2 border border-[#1e222b] leading-relaxed font-mono select-all">
+                        <div class="text-3xs text-gray-400 bg-[#0e1013] p-2 border border-[#1e222b] rounded-none leading-relaxed font-mono select-all">
                             {{ u.summary }}
                         </div>
                         
                         <div v-if="u.report_path" class="mt-1">
                             <a :href="u.report_path" target="_blank"
-                               class="block w-full text-center bg-red-950 border border-red-900 text-red-400 hover:bg-red-900 hover:text-white py-1 text-3xs font-bold transition-all font-mono">
+                               class="block w-full text-center bg-red-950 border border-red-900 text-red-400 hover:bg-red-900 hover:text-white py-1 text-3xs font-bold transition-all font-mono rounded-none">
                                 查看 UZI 深度诊断报告
                             </a>
                         </div>
@@ -1952,7 +1961,11 @@ def generate_html():
                 const uziAuditData = ref(window.RECAP_UZI_AUDIT || []);
                 
                 const currentUziAudit = computed(() => {
-                    return uziAuditData.value.filter(item => item.date === selectedDate.value);
+                    const list = uziAuditData.value.filter(item => item.date === selectedDate.value);
+                    const candidateCodes = topCandidates.value.map(c => c.code);
+                    return list.filter(item => candidateCodes.includes(item.code))
+                               .sort((a, b) => candidateCodes.indexOf(a.code) - candidateCodes.indexOf(b.code))
+                               .slice(0, 5);
                 });
                 
                 const isUziOnline = computed(() => {
@@ -2551,6 +2564,7 @@ def generate_html():
                     lucide.createIcons();
                     initChart();
                     initSimStock();
+                    console.log("Vue app mounted successfully!");
                 });
 
                 return {
