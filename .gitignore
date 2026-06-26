@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# Test & coverage caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# macOS
+.DS_Store
+
+# Vendored third-party checkout.
+# Restored/locked via scripts/restore-vendor.sh and vendor/VERSION.
+# Keep vendor/VERSION tracked, ignore everything else under vendor/.
+vendor/*
+!vendor/VERSION
+
+# Local env (keep .env.example tracked)
+.env
+.env.local
