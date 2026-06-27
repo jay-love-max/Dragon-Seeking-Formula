@@ -1,0 +1,112 @@
+# 寻龙诀规则契约 v1.0.0-draft
+# 唯一规则来源;盘后 src/recap_engine.py 与盘中 src/data_pipeline/ 共同消费。
+# 任何语义变更必须升级 rule_version;禁止用同一版本号改变历史含义。
+# 冲突裁决见 docs/adr/0003-rule-contract-and-conflict-adjudication.md。
+
+rule_version = "dragon-formula/1.0.0-draft"
+timezone = "Asia/Shanghai"
+max_published_candidates = 5
+
+# 非交易日、数据过期、关键列缺失时必须 fail closed;不可由 flag 绕过。
+# 以下功能开关均为 false 时退回旧逻辑,但数据质量闸门永不关闭。
+[feature_flags]
+enforce_f19 = false        # Phase 2:首板硬过滤 + 共振门槛
+enforce_f17 = false        # Phase 4:B-/C/D 过滤
+enforce_f18 = false        # Phase 3:F18 市场级总闸
+use_adjusted_score = false # Phase 5/7:回测达标前用 base_score 排序
+publish_execution_plan = false # Phase 6:结构化执行计划
+personality_enforce = false   # Phase 4:股性 enforce 阶段
+
+[f19]
+# 第二层基础硬门槛
+min_seal_funds_yuan = 50000000   # 5000 万元
+max_blown_count = 5
+require_non_st = true
+# 第三层共振门槛(至少一项明确为 true;UNKNOWN != FALSE)
+early_seal_before = "10:00:00"  # 严格 <,恰好 10:00:00 不算
+recent_resonance_sessions = 3  # 含当日在内的最近 N 个交易日
+recent_resonance_min_limit_ups = 2
+required_resonance_count = 1
+
+[f14]
+# 4 天 2 板评分加成,与 F19 的 3 天 2 板并存
+lookback_sessions = 4
+min_limit_ups = 2
+score_multiplier = 1.10
+
+[f17]
+# 股性禁买阈值;Phase 4 enforce 前仅 shadow
+blocked_grades = ["B_MINUS", "C", "D"]
+personality_min_sample_count = 20
+personality_coverage_gate = 0.95
+
+[f18]
+# 二进三联动市场级总闸
+halt_below = 0.20
+defensive_below = 0.30      # 20% <= rate <30%
+standard_at_or_below = 0.50 # 30% <= rate <=50%
+halt_risk_budget = 0.0
+defensive_risk_budget = 0.5
+standard_risk_budget = 1.0
+aggressive_risk_budget = 1.25
+low_sample_denominator = 5  # 分母 1-4 标记 LOW_SAMPLE,禁止 AGGRESSIVE
+
+[market_regime]
+# 最高连板状态与 1进2 动态系数(shadow;未回测前不覆盖 candidates.score)
+frozen_max_boards = 2          # <=2
+suppressed_max_boards = 3
+active_max_boards = 4          # ==4
+main_up_min_boards = 5         # >=5
+one_to_two_multiplier_frozen = 0.6
+one_to_two_multiplier_suppressed = 0.8
+one_to_two_multiplier_active = 1.0
+one_to_two_multiplier_main_up = 1.1
+
+[limit_rule]
+# 涨停幅度归一化;ST 先被 F19 排除,5cm 仅用于历史样本
+main_board_pct = 10.0
+chinext_pct = 20.0   # 300/301
+star_pct = 20.0      # 688/689
+bse_pct = 30.0       # 4/8 北交所
+st_pct = 5.0
+
+[seal_funds]
+# 绝对封单资金;<50m 已由 F19 硬过滤
+weak_seal_floor_yuan = 50000000
+weak_seal_ceiling_yuan = 100000000
+# 50m-100m 是否扣分,默认不扣(方案第 25 节第 4 项未确认)
+weak_seal_penalty_enabled = false
+weak_seal_penalty_points = 5
+
+[personality]
+# 股性评分 V2 公式权重
+weight_activity = 0.25
+weight_reliability = 0.25
+weight_explosiveness = 0.20
+weight_capital = 0.15
+weight_early_board = 0.15
+# 观察窗口(以目标交易日为截止点,严格排除未来数据)
+observation_sessions_days = 750   # 近 3 年交易日(活性/可靠性/爆发力/早盘板)
+capital_lookback_months = 2       # 资金面近 2 个自然月
+early_board_min_sample = 5
+grade_s_min = 75.0
+grade_a_min = 60.0
+grade_b_plus_min = 50.0
+grade_b_minus_min = 45.0   # B- 按 C 处理
+grade_c_min = 30.0
+
+[freshness]
+# 盘后任务
+post_market_min_local_time = "15:05:00"
+# 盘中任务(核心行情最大延迟)
+intraday_quote_max_age_seconds = 90
+intraday_limit_up_pool_max_age_seconds = 180
+
+[publishing]
+# 任一成立即 publishable=false;不可通过 flag 绕过
+require_trading_day = true
+require_limit_up_pool_valid = true
+require_index_majority = true   # 三大指数不可全部不可用
+require_rule_config_valid = true
+require_migration_ok = true
+require_no_default_zero = true
