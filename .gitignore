@@ -28,3 +28,13 @@ vendor/*
 # Local env (keep .env.example tracked)
 .env
 .env.local
+
+# claude-mem generated activity stubs (not repository instructions)
+docs/adr/CLAUDE.md
+docs/superpowers/specs/CLAUDE.md
+src/CLAUDE.md
+src/data_adapters/CLAUDE.md
+
+# Temporary commit diff backups and pre-migration database backups
+commit-*.diff
+data/*.bak
