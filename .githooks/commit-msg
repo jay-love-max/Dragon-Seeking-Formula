@@ -1,0 +1,40 @@
+#!/bin/sh
+# Lore commit-msg hook — 校验提交信息格式
+#
+# 安装方式：git config core.hooksPath .githooks
+
+COMMIT_MSG_FILE="$1"
+COMMIT_MSG=$(cat "$COMMIT_MSG_FILE")
+
+# 跳过 merge commits
+if echo "$COMMIT_MSG" | head -1 | grep -qE "^Merge "; then
+    exit 0
+fi
+
+# 检查非空
+if [ -z "$COMMIT_MSG" ]; then
+    echo "❌ 提交信息不能为空"
+    exit 1
+fi
+
+# 获取首行
+FIRST_LINE=$(echo "$COMMIT_MSG" | head -1)
+LINE_LEN=${#FIRST_LINE}
+
+# 首行长度检查
+if [ "$LINE_LEN" -lt 10 ]; then
+    echo "⚠️  首行太短（${LINE_LEN} 字符），请描述意图而非复述 diff（建议 10-120 字符）"
+    exit 1
+fi
+
+if [ "$LINE_LEN" -gt 120 ]; then
+    echo "⚠️  首行太长（${LINE_LEN} 字符），建议控制在 120 字符以内"
+    exit 1
+fi
+
+# 检查是否包含 Lore 元数据关键字（仅警告，不阻断）
+if ! echo "$COMMIT_MSG" | grep -qE "(Confidence|Scope-risk|Tested|Constraint|Rejected)"; then
+    echo "ℹ️  提示：提交信息中未发现 Lore 元数据（Confidence/Scope-risk/Tested 等），建议补充"
+fi
+
+exit 0
