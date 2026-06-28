@@ -1,0 +1,117 @@
+# 龙虎榜席位质量配置 v1.0
+# 来源:30_Knowledge/Dragon-Seeking/03-规则体系/风控体系.md 与 lhb_quality.py
+# 席位匹配先做空白/括号/营业部后缀标准化,再按别名精确/包含匹配;
+# 禁止模糊匹配自动命中,避免同名营业部误伤。
+
+seat_schema_version = "lhb-seats/1.0.0"
+
+# [[seats]] 每条:seat_id, canonical_name, aliases[], category, score_delta,
+# effective_from, evidence_note
+# category = "GOLD" | "DEATH" | "INSTITUTION"
+
+[[seats]]
+seat_id = "xian_taihua_rd"
+canonical_name = "西安太华路"
+aliases = ["西安太华路"]
+category = "GOLD"
+score_delta = 15
+effective_from = "2026-06-12"
+evidence_note = "风控体系金手指席位"
+
+[[seats]]
+seat_id = "wuhan_ziyang_rd"
+canonical_name = "武汉紫阳东路"
+aliases = ["武汉紫阳东路"]
+category = "GOLD"
+score_delta = 12
+effective_from = "2026-06-12"
+evidence_note = "62.9%胜率"
+
+[[seats]]
+seat_id = "beijing_zhichun_rd"
+canonical_name = "北京知春路"
+aliases = ["北京知春路"]
+category = "GOLD"
+score_delta = 12
+effective_from = "2026-06-12"
+evidence_note = "+1.41%"
+
+[[seats]]
+seat_id = "shanghai_yingkou_rd"
+canonical_name = "上海营口路"
+aliases = ["上海营口路"]
+category = "GOLD"
+score_delta = 10
+effective_from = "2026-06-12"
+
+[[seats]]
+seat_id = "hangzhou_shuguang_rd"
+canonical_name = "杭州曙光路"
+aliases = ["杭州曙光路"]
+category = "GOLD"
+score_delta = 10
+effective_from = "2026-06-12"
+
+[[seats]]
+seat_id = "shanghai_songjiang_zhongshan"
+canonical_name = "上海松江区中山东路"
+aliases = ["上海松江区中山东路"]
+category = "GOLD"
+score_delta = 8
+effective_from = "2026-06-12"
+
+# 死亡席位
+[[seats]]
+seat_id = "shanghai_changning_jiangsu_rd"
+canonical_name = "上海长宁区江苏路"
+aliases = ["上海长宁区江苏路"]
+category = "DEATH"
+score_delta = -25
+effective_from = "2026-06-12"
+evidence_note = "风控体系死亡席位 -2.69%"
+
+[[seats]]
+seat_id = "ningbo_sangtian_rd"
+canonical_name = "宁波桑田路"
+aliases = ["宁波桑田路"]
+category = "DEATH"
+score_delta = -20
+effective_from = "2026-06-12"
+evidence_note = "-1.98%"
+
+[[seats]]
+seat_id = "shaoxing_shengli_east_rd"
+canonical_name = "绍兴胜利东路"
+aliases = ["绍兴胜利东路"]
+category = "DEATH"
+score_delta = -15
+effective_from = "2026-06-12"
+evidence_note = "F16 特例:首板出现=建仓不扣分;二板+同席位净买出现扣-25(加重)"
+
+# 机构席位(score_delta 由净买方向动态决定,此处仅声明类别)
+[[seats]]
+seat_id = "institutional"
+canonical_name = "机构专用"
+aliases = ["机构专用", "深股通专用", "沪股通专用"]
+category = "INSTITUTION"
+score_delta = 0
+effective_from = "2026-06-12"
+evidence_note = "净买>0 +10/机构净买分档;净卖 -5"
+
+[lhb_scoring]
+base_score = 50
+good_min = 70
+neutral_min = 45
+# 净买卖分档(元)
+net_buy_1e8_delta = 20
+net_buy_5e7_delta = 15
+net_buy_1e7_delta = 10
+net_buy_positive_delta = 5
+net_sell_delta = -10
+# 机构净买分档(元)
+inst_net_5e7_delta = 15
+inst_net_1e7_delta = 10
+inst_net_positive_delta = 5
+# F16 绍兴胜利东路特例:连板阶段差异
+f16_shaoxing_first_board_delta = 0      # 首板不扣
+f16_shaoxing_second_board_plus_delta = -25  # 二板+出现扣
