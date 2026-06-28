@@ -22,6 +22,11 @@ if [[ -z "$LOCKED_HASH" ]]; then
 fi
 
 if [[ ! -d "$VENDOR_DIR/.git" ]]; then
+  if [[ -d "$VENDOR_DIR" && -n "$(ls -A "$VENDOR_DIR" 2>/dev/null)" ]]; then
+    echo "error: $VENDOR_DIR exists but is not a git repository" >&2
+    echo "remove or clear the directory and re-run scripts/restore-vendor.sh" >&2
+    exit 1
+  fi
   echo "Cloning tickflow-stock-panel into $VENDOR_DIR ..."
   git clone "$REPO_URL" "$VENDOR_DIR"
 fi

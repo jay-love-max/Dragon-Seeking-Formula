@@ -1,0 +1,22 @@
+FROM python:3.11-slim
+
+ARG USE_CN_MIRROR=1
+ARG PYPI_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+
+WORKDIR /app
+
+COPY pyproject.toml CONTEXT.md ./
+COPY src ./src
+
+RUN if [ "$USE_CN_MIRROR" = "1" ]; then \
+      pip install --no-cache-dir . -i "$PYPI_INDEX"; \
+    else \
+      pip install --no-cache-dir .; \
+    fi
+
+ENV PYTHONPATH=/app:/app/src \
+    RECAP_DB_PATH=/shared/recap.db \
+    DATA_DIR=/financial-data \
+    TZ=Asia/Shanghai
+
+CMD ["python", "-m", "src.data_pipeline"]

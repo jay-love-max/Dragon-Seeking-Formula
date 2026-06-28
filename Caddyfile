@@ -1,0 +1,8 @@
+:80 {
+  encode zstd gzip
+
+  redir / /tickflow/ 308
+  redir /tickflow /tickflow/ 308
+
+  reverse_proxy * tickflow:3018
+}

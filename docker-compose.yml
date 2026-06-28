@@ -1,0 +1,67 @@
+services:
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+      args:
+        USE_CN_MIRROR: ${USE_CN_MIRROR:-1}
+        PYPI_INDEX: ${PYPI_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}
+    environment: &engine-environment
+      RECAP_DB_PATH: /shared/recap.db
+      DATA_DIR: /financial-data
+      DATA_PROVIDER: ${DATA_PROVIDER:-a-stock-data}
+      AI_PROVIDER: ${AI_PROVIDER:-openai_compat}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+      TZ: Asia/Shanghai
+    volumes: &engine-volumes
+      - ./data:/shared
+      - ./vendor/tickflow-stock-panel/data:/financial-data:ro
+    restart: unless-stopped
+
+  recap-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+      args:
+        USE_CN_MIRROR: ${USE_CN_MIRROR:-1}
+        PYPI_INDEX: ${PYPI_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}
+    command: ["python", "-m", "recap_scheduler"]
+    environment: *engine-environment
+    volumes: *engine-volumes
+    restart: unless-stopped
+
+  tickflow:
+    build:
+      context: .
+      dockerfile: vendor/tickflow-stock-panel/Dockerfile
+      args:
+        USE_CN_MIRROR: ${USE_CN_MIRROR:-1}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+        PYPI_INDEX: ${PYPI_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        VITE_BASE_PATH: ${TICKFLOW_BASE_PATH:-/tickflow/}
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3018
+      DATA_DIR: /app/data
+      STATIC_DIR: /app/static
+      TIERS_YAML: /app/tiers.yaml
+      RECAP_DB_PATH: /shared/recap.db
+    volumes:
+      - ./vendor/tickflow-stock-panel/data:/app/data
+      - ./data:/shared
+    expose:
+      - "3018"
+    restart: unless-stopped
+
+  web:
+    image: caddy:2-alpine
+    depends_on:
+      - tickflow
+    ports:
+      - "8080:80"
+    volumes:
+      - ./:/srv:ro
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    restart: unless-stopped

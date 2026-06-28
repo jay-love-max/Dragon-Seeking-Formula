@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dragon-seeking-formula"
+version = "0.1.0"
+description = "寻龙诀 — A-share post-market 1进2 连板接力复盘引擎(规则打分 + ML 胜率预估 + UZI 三席位 AI 审计)"
+readme = "CONTEXT.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mootdx",
+    "akshare",
+    "pandas",
+    "numpy",
+    "scikit-learn",
+    "requests",
+    "aiohttp",
+    "apscheduler>=3.10",
+    "apsw>=3.50.4",
+]
+[project.optional-dependencies]
+# openai is soft-referenced (try/except) in recap_engine.py for the UZI AI audit path.
+ai = ["openai"]
+dev = [
+    "pytest>=7",
+    "ruff>=0.4",
+    # Phase 0+: rule contract uses stdlib tomllib (3.11+) to read config/rules/*.toml.
+    # Tests write mutated TOML to assert invalid configs are rejected at startup.
+    "tomli-w",
+    # asyncio test support for src/data_pipeline collector tests.
+    "pytest-asyncio",
+    # config/rules/dragon_formula_v1.toml mandates exchange_calendars + pandera (ADR 0003).
+    "exchange-calendars",
+    "pandera[pandas]",
+]
+
+[tool.setuptools]
+# Application package: expose src/ for editable installs.
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+norecursedirs = ["vendor", ".pytest_cache", ".venv", "build", "dist"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# data adapters do runtime duck-typing on dataframes; relax import order noise.
+"src/data_adapters/*.py" = ["E402"]
+# test files prepend src/ to sys.path before importing the package; that is
+# intentional, so module-import-not-at-top is expected here.
+"tests/*" = ["E402"]

@@ -15,6 +15,11 @@ fi
 
 LOCKED_HASH="$(grep -Eo '^[0-9a-f]{7,40}$' "$VERSION_FILE" | head -1 | tr -d '[:space:]')"
 
+if [[ -z "$LOCKED_HASH" ]]; then
+  echo "error: no valid commit hash found in $VERSION_FILE" >&2
+  exit 1
+fi
+
 if [[ ! -d "$VENDOR_DIR/.git" ]]; then
   echo "error: vendor checkout missing at $VENDOR_DIR. Run scripts/restore-vendor.sh" >&2
   exit 1
@@ -24,6 +29,13 @@ CURRENT_HASH="$(git -C "$VENDOR_DIR" rev-parse HEAD)"
 
 if [[ "$CURRENT_HASH" != "$LOCKED_HASH" ]]; then
   echo "warning: vendor HEAD ($CURRENT_HASH) != locked ($LOCKED_HASH)" >&2
+  echo "run: bash scripts/restore-vendor.sh" >&2
+  exit 1
+fi
+
+if [[ -n "$(git -C "$VENDOR_DIR" status --porcelain)" ]]; then
+  echo "warning: vendor working tree has local changes" >&2
+  echo "run: git -C $VENDOR_DIR reset --hard" >&2
   echo "run: bash scripts/restore-vendor.sh" >&2
   exit 1
 fi
