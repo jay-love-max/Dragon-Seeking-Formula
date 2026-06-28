@@ -248,25 +248,18 @@ def input_hash(record: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-# --- 确定性排序(方案 9.3) ---
+def _sort_key(d: CandidateDecision, *, use_adjusted_score: bool) -> tuple:
+    """排序键:主分数 → pred_prob → 股性分 → 封单 → 首封时间 → code。
 
-
-def _sort_key(d: CandidateDecision) -> tuple:
-    """排序键:score 降序 → pred_prob 降序(NULL最后) → 股性分降序 →
-    封单降序 → 首封升序(缺失最后) → code 升序。
-
-    使用元组 + 负号实现降序;None 用极值排最后。
+    use_adjusted_score=false 时,排序严格使用 base_score,adjusted_score 仅作为 shadow。
     """
-    # pred_prob: None 排最后 → 用 -1.0 占位(降序取负后最大)
+    primary_score = d.adjusted_score if use_adjusted_score else d.base_score
     pred = d.pred_prob if d.pred_prob is not None else -1.0
-    # personality_score: None 排最后
     pers = d.personality_score if d.personality_score is not None else -1.0
-    # 封单降序
     seal = float(d.signals.get("seal_funds_yuan", 0.0))
-    # 首封升序:空字符串排最后 → 用 "99:99:99" 占位
     seal_time = str(d.signals.get("first_seal_time", "")) or "99:99:99"
     return (
-        -d.adjusted_score,
+        -primary_score,
         -pred,
         -pers,
         -seal,
@@ -281,13 +274,12 @@ def rank_candidates(
 ) -> list[CandidateDecision]:
     """确定性排序并标记 Top 5。
 
-    方案 9.3:通过 F17/F19 后按 score 降序等顺序排序;前 5 标记 PUBLISHED_TOP5,
-    其余 RANKED_OUTSIDE_TOP5。被过滤的不发布。同样输入必须得到完全相同的排名。
-
-    返回新的 decision 列表(不修改入参),按排名顺序排列;
-    被过滤的排在已发布的之后,保持稳定。
+    通过 F17/F19 后按配置决定是否使用 adjusted_score 排序;前 5 标记
+    PUBLISHED_TOP5, 其余 RANKED_OUTSIDE_TOP5。被过滤的不发布。同样输入必须得到完全
+    相同的排名。
     """
     max_n = int(cfg.max_published_candidates)
+    use_adjusted_score = bool(cfg.raw.get("feature_flags", {}).get("use_adjusted_score", False))
 
     # 分离:通过硬门槛的参与排序;被过滤的不参与 Top5
     eligible = [d for d in decisions if d.eligible == CandidateEligibility.ELIGIBLE]
@@ -295,7 +287,7 @@ def rank_candidates(
 
     # 稳定排序(同输入同输出):Python sort 稳定,先按 code 再按主键确保确定性
     eligible_sorted = sorted(eligible, key=lambda d: d.code)
-    eligible_sorted = sorted(eligible_sorted, key=_sort_key)
+    eligible_sorted = sorted(eligible_sorted, key=lambda d: _sort_key(d, use_adjusted_score=use_adjusted_score))
 
     ranked: list[CandidateDecision] = []
     for i, d in enumerate(eligible_sorted):

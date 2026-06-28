@@ -291,6 +291,51 @@ class TestDeterministicRanking:
         ranked = rank_candidates(decisions, cfg)
         # pred_prob 0.7 排在 0.6 前
         assert ranked[0].code == "300051"
+    def test_use_adjusted_score_flag_controls_order(self):
+        cfg = load_rule_config()
+        base_raw = {**cfg.raw, "feature_flags": {**cfg.raw.get("feature_flags", {}), "use_adjusted_score": False}}
+        adj_raw = {**cfg.raw, "feature_flags": {**cfg.raw.get("feature_flags", {}), "use_adjusted_score": True}}
+        cfg_base = type(cfg)(raw=base_raw)
+        cfg_adj = type(cfg)(raw=adj_raw)
+        decisions = [
+            CandidateDecision(
+                trade_date="2026-06-24",
+                code="300050",
+                rule_version=cfg.rule_version,
+                eligible=CandidateEligibility.ELIGIBLE,
+                publication_status=PublicationStatus.OBSERVATION_ONLY,
+                published_rank=None,
+                base_score=100,
+                adjusted_score=90,
+                pred_prob=0.5,
+                personality_score=50.0,
+                personality_grade="A",
+                reason_codes=[],
+                signals={},
+                input_hash="x",
+            ),
+            CandidateDecision(
+                trade_date="2026-06-24",
+                code="300051",
+                rule_version=cfg.rule_version,
+                eligible=CandidateEligibility.ELIGIBLE,
+                publication_status=PublicationStatus.OBSERVATION_ONLY,
+                published_rank=None,
+                base_score=95,
+                adjusted_score=110,
+                pred_prob=0.5,
+                personality_score=50.0,
+                personality_grade="A",
+                reason_codes=[],
+                signals={},
+                input_hash="y",
+            ),
+        ]
+        base_ranked = rank_candidates(decisions, cfg_base)
+        adj_ranked = rank_candidates(decisions, cfg_adj)
+        assert base_ranked[0].code == "300050"
+        assert adj_ranked[0].code == "300051"
+
 
     def test_outside_top5_marked_ranked_outside(self):
         cfg = load_rule_config()

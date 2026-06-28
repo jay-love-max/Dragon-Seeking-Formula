@@ -187,21 +187,33 @@ def persist_decisions_and_top5(
     name_by_code: dict[str, str] | None = None,
     extra_fields_by_code: dict[str, dict[str, Any]] | None = None,
 ) -> None:
-    """写入全部 decisions,并把 Top 5 写入 candidates 兼容表。
+    """Write all decisions and publish only Top 5 rows into candidates."""
 
-    score_by_code 提供 0-150 接力指数(ADR 0002 兼容契约)。
-    extra_fields_by_code 提供 candidates 兼容表其他列(price/change_pct 等)。
+    def _first_not_none(*values: Any) -> Any:
+        for value in values:
+            if value is None:
+                continue
+            try:
+                if pd.isna(value):
+                    continue
+            except Exception:
+                pass
+            return value
+        return None
 
-    candidates 表的 float_mcap 以十亿存、seal_funds 以百万存(展示转换,
-    方案 7.2);此处仅做持久化兼容转换,规则计算不在此发生。
-    """
-    # 1. 先写全部 decisions
+    def _json_text(value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        return json.dumps(value, ensure_ascii=False)
+
     for d in ranked_decisions:
         _persist_decision_clean(db_path, d)
 
-    # 2. 清除当日旧 candidates 并只写 Top 5
     if not ranked_decisions:
         return
+
     trade_date = ranked_decisions[0].trade_date
     name_by_code = name_by_code or {}
     extra_fields_by_code = extra_fields_by_code or {}
@@ -212,15 +224,31 @@ def persist_decisions_and_top5(
         for d in ranked_decisions:
             if d.publication_status != PublicationStatus.PUBLISHED_TOP5:
                 continue
-            score = int(score_by_code.get(d.code, d.base_score))
-            score = max(0, min(150, score))  # ADR 0002: 0-150
-            extra = extra_fields_by_code.get(d.code, {})
 
-            # 兼容表展示转换:元 → 十亿/百万
-            float_mcap_yuan = d.signals.get("float_mcap_yuan")
-            seal_funds_yuan = d.signals.get("seal_funds_yuan")
-            float_mcap_billion = round(float(float_mcap_yuan) / 1e9, 2) if float_mcap_yuan else extra.get("float_mcap")
-            seal_funds_million = round(float(seal_funds_yuan) / 1e6, 2) if seal_funds_yuan else extra.get("seal_funds")
+            score = int(score_by_code.get(d.code, d.base_score))
+            score = max(0, min(150, score))
+            extra = extra_fields_by_code.get(d.code, {})
+            signals = d.signals or {}
+
+            float_mcap_yuan = _first_not_none(signals.get("float_mcap_yuan"), extra.get("float_mcap_yuan"))
+            seal_funds_yuan = _first_not_none(signals.get("seal_funds_yuan"), extra.get("seal_funds_yuan"))
+            float_mcap_billion = (
+                round(float(float_mcap_yuan) / 1e9, 2)
+                if float_mcap_yuan is not None
+                else extra.get("float_mcap")
+            )
+            seal_funds_million = (
+                round(float(seal_funds_yuan) / 1e6, 2)
+                if seal_funds_yuan is not None
+                else extra.get("seal_funds")
+            )
+            personality_grade = _first_not_none(
+                signals.get("personality_grade"),
+                extra.get("personality_grade"),
+            )
+            personality_dims = _json_text(
+                _first_not_none(signals.get("personality_dims"), extra.get("personality_dims"))
+            )
 
             conn.execute(
                 """
@@ -243,16 +271,23 @@ def persist_decisions_and_top5(
                     float_mcap_billion,
                     seal_funds_million,
                     extra.get("seal_ratio"),
-                    d.signals.get("first_seal_time"),
-                    d.signals.get("blown_count"),
-                    d.signals.get("consecutive_boards", 1),
+                    signals.get("first_seal_time"),
+                    signals.get("blown_count"),
+                    signals.get("consecutive_boards", 1),
                     extra.get("sector"),
                     extra.get("concept"),
                     score,
                     extra.get("playbook"),
                     d.pred_prob,
-                    None, None, None, None, None,
-                    None, None, None, None
+                    personality_grade,
+                    personality_dims,
+                    _first_not_none(signals.get("lhb_gold_net"), extra.get("lhb_gold_net")),
+                    _first_not_none(signals.get("lhb_death_net"), extra.get("lhb_death_net")),
+                    _first_not_none(signals.get("lhb_inst_net"), extra.get("lhb_inst_net")),
+                    _first_not_none(signals.get("block_f16"), extra.get("block_f16")),
+                    _first_not_none(signals.get("block_f17"), extra.get("block_f17")),
+                    _first_not_none(signals.get("block_f18"), extra.get("block_f18")),
+                    _first_not_none(signals.get("block_f19"), extra.get("block_f19")),
                 ),
             )
         conn.commit()

@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 # Add src to python path
 SRC_DIR = Path(__file__).resolve().parents[1] / "src"
@@ -193,7 +194,7 @@ class TestRecapPipeline(unittest.TestCase):
                         "code": "600519",
                         "name": "测试股份",
                         "first_seal_time": "093000",
-                        "turnover": 6.2,
+                        "turnover_pct": 6.2,
                         "sector": "白酒",
                     }
                 ],
@@ -222,6 +223,33 @@ class TestRecapPipeline(unittest.TestCase):
             recap_engine.ADAPTER.get_finance_data = original_finance
             recap_engine._load_shared_ai_settings = original_loader
 
+    def test_build_uzi_candidates_filters_to_published_top5(self):
+        df_1b = recap_engine.pd.DataFrame([
+            {
+                "code": "000001",
+                "name": "候选A",
+                "first_seal_time": "093000",
+                "turnover_pct": 1.2,
+                "sector": "行业A",
+            },
+            {
+                "code": "000002",
+                "name": "候选B",
+                "first_seal_time": "093100",
+                "turnover_pct": 2.3,
+                "sector": "行业B",
+            },
+        ])
+        ranked = [
+            SimpleNamespace(code="000002", publication_status="PUBLISHED_TOP5"),
+            SimpleNamespace(code="000001", publication_status="RANKED_OUTSIDE_TOP5"),
+        ]
+
+        candidates = recap_engine._build_uzi_candidates(df_1b, ranked)
+
+        self.assertEqual([c["code"] for c in candidates], ["000002"])
+        self.assertEqual(candidates[0]["first_seal_time"], "09:31:00")
+
     def test_real_uzi_audit_falls_back_to_local_rules_without_api_key(self):
         recap_engine.init_db()
         conn = sqlite3.connect(str(self.db_path))
@@ -230,7 +258,7 @@ class TestRecapPipeline(unittest.TestCase):
                 conn,
                 "2026-06-26",
                 [
-                    {"code": "600519", "name": "贵州茅台", "first_seal_time": "093000", "turnover": 6.2, "sector": "白酒"},
+                    {"code": "600519", "name": "贵州茅台", "first_seal_time": "093000", "turnover_pct": 6.2, "sector": "白酒"},
                 ],
                 uzi_path="/nonexistent/UZI-Skill",
             )
@@ -305,7 +333,7 @@ class TestRecapPipeline(unittest.TestCase):
                 results = recap_engine.run_real_uzi_audit(
                     conn,
                     "2026-06-26",
-                    [{"code": "600519", "name": "贵州茅台", "first_seal_time": "093000", "turnover": 6.2, "sector": "白酒"}],
+                    [{"code": "600519", "name": "贵州茅台", "first_seal_time": "093000", "turnover_pct": 6.2, "sector": "白酒"}],
                     uzi_path="/unused",
                 )
                 self.assertEqual(len(results), 1)
@@ -412,6 +440,224 @@ class TestRecapPipeline(unittest.TestCase):
         self.assertEqual(recap_engine._fmt_pct("0.123"), "0.1%")
         self.assertEqual(recap_engine._fmt_yi("123000000"), "1.23亿")
 
+    def test_run_recap_offline_end_to_end(self):
+        from contextlib import ExitStack
+        from unittest.mock import patch
+
+        import pandas as pd
+
+        from contracts import FetchResult
+        from tests.fixtures.golden_samples import GOLDEN_2026_06_24, first_board_record
+
+        date_str = "2026-06-24"
+        trade_dates = pd.bdate_range(end="2026-06-23", periods=20).strftime("%Y-%m-%d").tolist()
+        trade_dates.append(date_str)
+        recap_engine.init_db()
+
+        recap_row = {
+            "sh_price": 3000.0,
+            "sh_change": 1.2,
+            "sz_price": 9000.0,
+            "sz_change": 2.3,
+            "cy_price": 2100.0,
+            "cy_change": 3.4,
+            "total_turnover": 2.9,
+            "limit_ups": 5,
+            "limit_downs": 2,
+            "promotion_rate": 0.5,
+            "hgt_flow": 1.1e11,
+            "sgt_flow": 3.3e10,
+            "sentiment": "活跃",
+            "sector_ranking": json.dumps([]),
+        }
+
+        for day_idx, trade_date in enumerate(trade_dates[:-1]):
+            recap_engine.persist_market_recap(recap_engine.DB_PATH, {"date": trade_date, **recap_row})
+            for row_idx in range(6):
+                code = f"{600100 + day_idx * 10 + row_idx:06d}"
+                seed_row = first_board_record(
+                    code,
+                    f"训练{code}",
+                    seal_funds_yuan=60_000_000 + row_idx * 2_000_000,
+                    blown_count=row_idx % 3,
+                    first_seal_time=["09:31:00", "09:35:00", "09:40:00", "09:45:00", "09:50:00", "09:55:00"][row_idx],
+                    float_mcap_yuan=8_000_000_000 + row_idx * 100_000_000,
+                    turnover_pct=6.0 + row_idx,
+                    change_pct=10.0,
+                    sector="电子" if row_idx % 2 == 0 else "半导体",
+                    trade_date=trade_date,
+                )
+                recap_engine.persist_observation(
+                    recap_engine.DB_PATH,
+                    seed_row,
+                    label_next_2board=1 if (day_idx + row_idx) % 2 == 0 else 0,
+                )
+
+        df_pool = pd.DataFrame(
+            [
+                {
+                    "code": r["code"],
+                    "name": r["name"],
+                    "trade_date": r["trade_date"],
+                    "price": r["price"],
+                    "change_pct": r["change_pct"],
+                    "turnover_pct": r["turnover_pct"],
+                    "float_mcap_yuan": r["float_mcap_yuan"],
+                    "seal_funds_yuan": r["seal_funds_yuan"],
+                    "first_seal_time": r["first_seal_time"],
+                    "blown_count": r["blown_count"],
+                    "consecutive_boards": r["consecutive_boards"],
+                    "is_st": r["is_st"],
+                    "sector": r["sector"],
+                    "concept": f"题材{i + 1}",
+                }
+                for i, r in enumerate(GOLDEN_2026_06_24)
+            ]
+        )
+        index_payload = pd.DataFrame(
+            [
+                {"index": "sh", "price": 3000.0, "change_pct": 1.2, "amount_yuan": 1.1e12},
+                {"index": "sz", "price": 9000.0, "change_pct": 2.3, "amount_yuan": 1.4e12},
+                {"index": "cy", "price": 2100.0, "change_pct": 3.4, "amount_yuan": 0.8e12},
+            ]
+        )
+        limit_up_fetch = FetchResult.ok(
+            dataset_name="limit_up_pool",
+            provider="offline",
+            requested_trade_date=date_str,
+            as_of=date_str,
+            payload=df_pool,
+            schema_version=1,
+        )
+        index_fetch = FetchResult.ok(
+            dataset_name="index_recap",
+            provider="offline",
+            requested_trade_date=date_str,
+            as_of=date_str,
+            payload=index_payload,
+            schema_version=1,
+        )
+
+        def fake_run_real_uzi_audit(conn, audit_date, candidates, uzi_path):
+            results = []
+            for idx, cand in enumerate(candidates):
+                summary = f"{cand['name']} offline audit"
+                conn.execute(
+                    """
+                    INSERT INTO uzi_audit (
+                        date, code, name, average_score, val_vote, mom_vote,
+                        risk_level, summary, report_path, analysis_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        audit_date,
+                        cand["code"],
+                        cand["name"],
+                        80.0 - idx,
+                        "多头",
+                        "观望",
+                        "安全",
+                        summary,
+                        "",
+                        json.dumps({"offline": True, "sector": cand.get("sector", "")}, ensure_ascii=False),
+                    ),
+                )
+                results.append(
+                    {
+                        "code": cand["code"],
+                        "name": cand["name"],
+                        "average_score": 80.0 - idx,
+                        "val_vote": "多头",
+                        "mom_vote": "观望",
+                        "risk_level": "安全",
+                        "summary": summary,
+                        "report_path": "",
+                    }
+                )
+            conn.commit()
+            return results
+
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(recap_engine, "run_real_uzi_audit", side_effect=fake_run_real_uzi_audit))
+            stack.enter_context(patch.object(recap_engine, "fetch_ths_reasons", return_value={}))
+            stack.enter_context(patch.object(recap_engine, "get_index_recap_fetchresult", return_value=index_fetch))
+            stack.enter_context(patch.object(recap_engine.ADAPTER, "get_limit_up_pool", return_value=limit_up_fetch))
+            stack.enter_context(patch.object(recap_engine.ADAPTER, "get_limit_down_pool", return_value=pd.DataFrame()))
+            stack.enter_context(
+                patch.object(
+                    recap_engine.ADAPTER,
+                    "get_concept_reasons",
+                    return_value={r["code"]: r["concept"] for r in df_pool.to_dict("records")},
+                )
+            )
+            stack.enter_context(
+                patch.object(recap_engine.ADAPTER, "get_lhb_statistics", return_value=pd.DataFrame(columns=["code"]))
+            )
+            stack.enter_context(
+                patch.object(recap_engine.ADAPTER, "get_lhb_details", return_value=pd.DataFrame(columns=["code"]))
+            )
+
+            ok = recap_engine.run_recap(date_str, trade_dates)
+
+        self.assertTrue(ok)
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            run_row = conn.execute(
+                "SELECT status, publishable, failure_code FROM recap_runs WHERE trade_date=? ORDER BY started_at DESC LIMIT 1",
+                (date_str,),
+            ).fetchone()
+            self.assertEqual(run_row, ("COMPLETED", 1, None))
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM limit_ups_archive WHERE date=?", (date_str,)).fetchone()[0],
+                len(df_pool),
+            )
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM candidate_observations WHERE trade_date=?", (date_str,)).fetchone()[0],
+                len(df_pool),
+            )
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM candidates WHERE date=?", (date_str,)).fetchone()[0],
+                len(df_pool),
+            )
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM market_risk WHERE trade_date=?", (date_str,)).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM uzi_audit WHERE date=?", (date_str,)).fetchone()[0],
+                len(df_pool),
+            )
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM source_snapshots WHERE run_id IN (SELECT run_id FROM recap_runs WHERE trade_date=? )", (date_str,)).fetchone()[0] > 0,
+                True,
+            )
+            candidate_row = conn.execute(
+                """
+                SELECT personality_grade, personality_dims, block_f16, block_f17, block_f18, block_f19, pred_prob, score
+                  FROM candidates
+                 WHERE date=?
+                 ORDER BY score DESC
+                 LIMIT 1
+                """,
+                (date_str,),
+            ).fetchone()
+            self.assertIsNotNone(candidate_row)
+            self.assertIsNotNone(candidate_row[0])
+            self.assertIsNotNone(candidate_row[1])
+            self.assertTrue(all(v is not None for v in candidate_row[2:6]))
+            self.assertGreaterEqual(candidate_row[7], 0)
+            self.assertLessEqual(candidate_row[7], 150)
+            self.assertIsNotNone(candidate_row[6])
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM execution_plans WHERE trade_date=?", (date_str,)).fetchone()[0],
+                0,
+            )
+        finally:
+            conn.close()
+
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -490,17 +736,17 @@ def test_recap_applies_realtime_snapshot_backfill():
     df = pd.DataFrame(
         [
             {
-                "代码": "600519",
-                "名称": "茅台",
-                "最新价": None,
-                "涨跌幅": None,
-                "换手率": None,
-                "流通市值": None,
-                "封板资金": None,
-                "首次封板时间": "",
-                "炸板次数": None,
-                "所属行业": "",
-                "连板数": 1,
+                "code": "600519",
+                "name": "茅台",
+                "price": None,
+                "change_pct": None,
+                "turnover_pct": None,
+                "float_mcap_yuan": None,
+                "seal_funds_yuan": None,
+                "first_seal_time": "",
+                "blown_count": None,
+                "sector": "",
+                "consecutive_boards": 1,
             }
         ]
     )
@@ -523,15 +769,15 @@ def test_recap_applies_realtime_snapshot_backfill():
     result = recap_engine._apply_realtime_snapshot(df, snapshot)
     row = result.iloc[0]
 
-    assert row["名称"] == "贵州茅台"
-    assert row["最新价"] == 1500.0
-    assert row["涨跌幅"] == 9.98
-    assert row["换手率"] == 5.6
-    assert row["流通市值"] == 1800.0
-    assert row["封板资金"] == 321.0
-    assert row["首次封板时间"] == "093000"
-    assert row["炸板次数"] == 0
-    assert row["所属行业"] == "白酒"
+    assert row["name"] == "贵州茅台"
+    assert row["price"] == 1500.0
+    assert row["change_pct"] == 9.98
+    assert row["turnover_pct"] == 5.6
+    assert row["float_mcap_yuan"] == 1800.0
+    assert row["seal_funds_yuan"] == 321.0
+    assert row["first_seal_time"] == "093000"
+    assert row["blown_count"] == 0
+    assert row["sector"] == "白酒"
 
 
 def test_expanding_sector_encoding_uses_only_earlier_dates():

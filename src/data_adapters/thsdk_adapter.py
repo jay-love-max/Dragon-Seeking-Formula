@@ -5,9 +5,14 @@ from typing import Any
 
 import pandas as pd
 
-from contracts import FetchResult
+from contracts import FetchResult, validate_limit_up_pool
 
-from .base_adapter import BaseStockAdapter
+from .base_adapter import (
+    BaseStockAdapter,
+    normalize_lhb_details,
+    normalize_lhb_statistics,
+    normalize_stock_comments,
+)
 
 
 class ThsdkAdapter(BaseStockAdapter):
@@ -193,12 +198,132 @@ class ThsdkAdapter(BaseStockAdapter):
 
         return mapped
 
-    def get_limit_up_pool(self, date_str: str) -> pd.DataFrame:
+    def get_limit_up_pool(self, date_str: str) -> FetchResult:
         query = f"{date_str}涨停且非ST，包含首次封板时间，连续涨停天数，换手率，所属行业，流通市值，封板资金，炸板次数"
         res = self.ths_client.wencai_nlp(query)
-        if res.success and res.data:
-            return self._map_wencai_columns(res.df)
-        return pd.DataFrame()
+        if not (res.success and res.data):
+            return FetchResult.unavailable(
+                dataset_name="limit_up_pool",
+                provider="thsdk",
+                requested_trade_date=date_str,
+                error_code="LIMIT_UP_POOL_UNAVAILABLE",
+                error_message="thsdk limit-up pool unavailable",
+                schema_version=1,
+            )
+        mapped = self._map_wencai_columns(res.df)
+        if mapped.empty:
+            return FetchResult.unavailable(
+                dataset_name="limit_up_pool",
+                provider="thsdk",
+                requested_trade_date=date_str,
+                error_code="EMPTY_POOL",
+                error_message="thsdk limit-up pool empty after mapping",
+                schema_version=1,
+            )
+
+        rename_to_en = {
+            "代码": "code",
+            "名称": "name",
+            "连板数": "consecutive_boards",
+            "首次封板时间": "first_seal_time",
+            "炸板次数": "blown_count",
+            "流通市值": "float_mcap_yuan",
+            "封板资金": "seal_funds_yuan",
+            "换手率": "turnover_pct",
+            "所属行业": "sector",
+        }
+        df = mapped.rename(columns={src: dst for src, dst in rename_to_en.items() if src in mapped.columns})
+
+        required = [
+            "code", "name", "consecutive_boards", "first_seal_time", "blown_count",
+            "float_mcap_yuan", "seal_funds_yuan", "turnover_pct", "sector",
+        ]
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            return FetchResult.invalid(
+                dataset_name="limit_up_pool",
+                provider="thsdk",
+                requested_trade_date=date_str,
+                error_message=f"limit_up_pool missing columns: {missing}",
+                schema_version=1,
+                payload=df,
+            )
+
+        def _normalize_time(value):
+            text = "".join(ch for ch in str(value or "") if ch.isdigit())
+            if not text:
+                return None
+            digits = text.zfill(6)[-6:]
+            return f"{digits[:2]}:{digits[2:4]}:{digits[4:]}"
+
+        normalized = pd.DataFrame()
+        normalized["code"] = (
+            df["code"].astype(str).str.extract(r"(\d{6})", expand=False).fillna("").str.zfill(6)
+        )
+        normalized["name"] = df["name"].astype(str).str.strip()
+        normalized["trade_date"] = date_str
+        normalized["consecutive_boards"] = pd.to_numeric(df["consecutive_boards"], errors="coerce").fillna(1).astype(int)
+        normalized["first_seal_time"] = df["first_seal_time"].map(_normalize_time)
+        normalized["blown_count"] = pd.to_numeric(df["blown_count"], errors="coerce").fillna(0).astype(int)
+        normalized["float_mcap_yuan"] = pd.to_numeric(df["float_mcap_yuan"], errors="coerce")
+        normalized["seal_funds_yuan"] = pd.to_numeric(df["seal_funds_yuan"], errors="coerce")
+        normalized["turnover_pct"] = pd.to_numeric(df["turnover_pct"], errors="coerce")
+        normalized["sector"] = df["sector"].fillna("UNKNOWN").astype(str).str.strip().replace("", "UNKNOWN")
+        normalized["price"] = 0.0  # wencai may not return price; placeholder used in downstream
+        normalized["change_pct"] = 0.0
+        normalized["is_st"] = normalized["name"].str.contains(r"^(\*?ST|S\*ST|退市)", regex=True)
+
+        before = len(normalized)
+        normalized = normalized[
+            normalized["code"].str.fullmatch(r"\d{6}", na=False)
+            & normalized["name"].ne("")
+            & normalized["consecutive_boards"].notna()
+            & normalized["blown_count"].notna()
+            & normalized["float_mcap_yuan"].notna()
+            & normalized["seal_funds_yuan"].notna()
+            & normalized["turnover_pct"].notna()
+            & normalized["sector"].ne("")
+        ].copy()
+        if normalized.empty:
+            return FetchResult.invalid(
+                dataset_name="limit_up_pool",
+                provider="thsdk",
+                requested_trade_date=date_str,
+                error_message="thsdk limit-up pool contains no valid rows after normalization",
+                schema_version=1,
+                payload=df,
+            )
+
+        normalized["consecutive_boards"] = normalized["consecutive_boards"].astype(int)
+        normalized["blown_count"] = normalized["blown_count"].astype(int)
+        normalized["is_st"] = normalized["is_st"].astype(bool)
+        normalized["trade_date"] = date_str
+
+        valid, error = validate_limit_up_pool(normalized)
+        if not valid:
+            return FetchResult.invalid(
+                dataset_name="limit_up_pool",
+                provider="thsdk",
+                requested_trade_date=date_str,
+                error_message=error or "limit_up_pool invalid",
+                schema_version=1,
+                payload=normalized,
+            )
+
+        warnings = []
+        if len(normalized) != before:
+            warnings.append(f"dropped {before - len(normalized)} malformed limit-up rows")
+        kwargs = dict(
+            dataset_name="limit_up_pool",
+            provider="thsdk",
+            requested_trade_date=date_str,
+            as_of=date_str,
+            payload=normalized,
+            schema_version=1,
+        )
+        if warnings:
+            return FetchResult.degraded(**kwargs, warnings=warnings)
+        return FetchResult.ok(**kwargs)
 
     def get_limit_down_pool(self, date_str: str) -> pd.DataFrame:
         query = f"{date_str}跌停且非ST"
@@ -291,7 +416,8 @@ class ThsdkAdapter(BaseStockAdapter):
     def get_stock_comments(self) -> pd.DataFrame:
         import akshare as ak
         try:
-            return ak.stock_comment_em()
+            raw = ak.stock_comment_em()
+            return normalize_stock_comments(raw)
         except Exception as e:
             print(f"[thsdk] Error fetching stock comments: {e}")
             return pd.DataFrame()
@@ -299,7 +425,8 @@ class ThsdkAdapter(BaseStockAdapter):
     def get_lhb_statistics(self) -> pd.DataFrame:
         import akshare as ak
         try:
-            return ak.stock_lhb_stock_statistic_em(symbol="近一月")
+            raw = ak.stock_lhb_stock_statistic_em(symbol="近一月")
+            return normalize_lhb_statistics(raw)
         except Exception as e:
             print(f"[thsdk] Error fetching LHB statistics: {e}")
             return pd.DataFrame()
@@ -307,7 +434,8 @@ class ThsdkAdapter(BaseStockAdapter):
     def get_lhb_details(self, start_date: str, end_date: str) -> pd.DataFrame:
         import akshare as ak
         try:
-            return ak.stock_lhb_detail_em(start_date=start_date, end_date=end_date)
+            raw = ak.stock_lhb_detail_em(start_date=start_date, end_date=end_date)
+            return normalize_lhb_details(raw)
         except Exception as e:
             print(f"[thsdk] Error fetching LHB details: {e}")
             return pd.DataFrame()

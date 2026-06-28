@@ -248,6 +248,62 @@ class TestPersistDecisionsAndTop5:
         finally:
             conn.close()
 
+    def test_extended_candidate_fields_are_persisted(self, migrated_db):
+        cfg = load_rule_config()
+        rec = GOLDEN_2026_06_24[0]
+        decision = evaluate_f19(rec, cfg, recent_limit_ups_by_code={rec["code"]: ["2026-06-22", "2026-06-24"]})
+        ranked = rank_candidates([decision], cfg)
+        persist_observation(migrated_db, rec)
+        persist_decisions_and_top5(
+            migrated_db,
+            ranked,
+            score_by_code={rec["code"]: 128},
+            extra_fields_by_code={
+                rec["code"]: {
+                    "price": 10.5,
+                    "change_pct": 9.9,
+                    "turnover": 7.7,
+                    "float_mcap": 12.3,
+                    "seal_funds": 45.6,
+                    "seal_ratio": 3.7,
+                    "first_seal_time": "09:35:00",
+                    "blown_count": 1,
+                    "sector": "电子",
+                    "concept": "题材A",
+                    "playbook": "playbook",
+                    "personality_grade": "A",
+                    "personality_dims": {"activity": 1.0, "reliability": 0.9},
+                    "lhb_gold_net": 123.0,
+                    "lhb_death_net": None,
+                    "lhb_inst_net": 45.0,
+                    "block_f16": 0,
+                    "block_f17": 1,
+                    "block_f18": 0,
+                    "block_f19": 1,
+                }
+            },
+        )
+
+        conn = connect(migrated_db, read_only=True)
+        try:
+            row = conn.execute(
+                """
+                SELECT personality_grade, personality_dims, lhb_gold_net, lhb_inst_net,
+                       block_f17, block_f19, score
+                  FROM candidates
+                 WHERE code=?
+                """,
+                (rec["code"],),
+            ).fetchone()
+            assert row[0] == "A"
+            assert row[1] is not None
+            assert row[2] == 123.0
+            assert row[3] == 45.0
+            assert row[4] == 1
+            assert row[5] == 1
+            assert row[6] == 128
+        finally:
+            conn.close()
 
 class TestMLReadsObservations:
     """方案 16.1:训练输入改为 candidate_observations,不能用过滤后的 Top 5。"""

@@ -1,16 +1,8 @@
-"""Shared relay score computation — used by both recap_engine (end-of-day) and data_pipeline (intraday)."""
+"""Shared relay score computation — used by recap_engine and data_pipeline."""
 
 from __future__ import annotations
 
 from typing import Any
-
-SCORE_FIELD_ALIASES = {
-    "first_seal_time": "首次封板时间",
-    "blown_count": "炸板次数",
-    "float_mcap": "流通市值",
-    "seal_funds": "封板资金",
-    "turnover": "换手率",
-}
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -37,13 +29,6 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(float(value))
     except (TypeError, ValueError):
         return default
-
-
-def _score_value(row: dict, canonical_name: str) -> Any:
-    """Read the canonical pipeline field, falling back to the raw provider name."""
-    if canonical_name in row:
-        return row[canonical_name]
-    return row.get(SCORE_FIELD_ALIASES[canonical_name])
 
 
 def _normalize_time(value: Any, default: str = "120000") -> str:
@@ -163,13 +148,11 @@ def _noise_caps(
         )
     )
 
-    # Low-consensus setups should not score like clean trend leaders.
     if supportive_factors <= 2:
         score = min(score, 85)
     elif supportive_factors == 3:
         score = min(score, 100)
 
-    # Clear noise patterns get explicit caps.
     if blown >= 2:
         score = min(score, 80)
     if sector_limit_ups <= 1 and not is_one_word:
@@ -183,21 +166,14 @@ def _noise_caps(
 
 
 def compute_relay_score(row: dict, sector_limit_ups: int) -> int:
-    """
-    Compute the 1进2 relay score (0-150) for a limit-up candidate.
-
-    Canonical input keys are the normalized pipeline fields:
-        "first_seal_time", "blown_count", "float_mcap", "seal_funds", "turnover"
-    Raw akshare Chinese names remain supported for the end-of-day recap path.
-    sector_limit_ups: number of limit-up stocks in the same sector today.
-    """
-    time_str = _normalize_time(_score_value(row, "first_seal_time"))
+    """Compute the 1进2 relay score (0-150) for a limit-up candidate."""
+    time_str = _normalize_time(row.get("first_seal_time"))
     is_one_word = time_str == "092500"
 
-    blown = _safe_int(_score_value(row, "blown_count"), 0)
-    float_mcap = _safe_float(_score_value(row, "float_mcap"), 0.0)
-    seal_funds = _safe_float(_score_value(row, "seal_funds"), 0.0)
-    turnover = _safe_float(_score_value(row, "turnover"), 0.0)
+    blown = _safe_int(row.get("blown_count"), 0)
+    float_mcap = _safe_float(row.get("float_mcap"), 0.0)
+    seal_funds = _safe_float(row.get("seal_funds"), 0.0)
+    turnover = _safe_float(row.get("turnover"), 0.0)
     sector_limit_ups = _safe_int(sector_limit_ups, 0)
 
     timing_points = _time_points(time_str)
@@ -234,8 +210,14 @@ def compute_relay_score(row: dict, sector_limit_ups: int) -> int:
     return max(0, min(150, score))
 
 
-def generate_playbook(sector: str, time_str: str, blown: int, turnover: float,
-                      score: int, sector_limit_ups: int) -> str:
+def generate_playbook(
+    sector: str,
+    time_str: str,
+    blown: int,
+    turnover: float,
+    score: int,
+    sector_limit_ups: int,
+) -> str:
     """Generate momentum trading playbook based on stock metrics."""
     sector = sector or "未分类"
     time_str = _normalize_time(time_str)

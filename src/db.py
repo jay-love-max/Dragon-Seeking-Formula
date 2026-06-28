@@ -514,9 +514,9 @@ def persist_limit_up_archive(db_path: str, trade_date: str, rows: Iterable[dict[
                 "INSERT OR REPLACE INTO limit_ups_archive (date, code, name, consecutive_boards) VALUES (?, ?, ?, ?)",
                 (
                     trade_date,
-                    str(row.get("代码") or row.get("code") or "").zfill(6),
-                    row.get("名称") or row.get("name"),
-                    int(row.get("连板数") or row.get("consecutive_boards") or 0),
+                    str(row.get("code") or "").zfill(6),
+                    row.get("name"),
+                    int(row.get("consecutive_boards") or 0),
                 ),
             )
         conn.commit()

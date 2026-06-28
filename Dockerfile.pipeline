@@ -6,8 +6,8 @@ ARG PYPI_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 WORKDIR /app
 
 COPY pyproject.toml CONTEXT.md ./
+COPY config ./config
 COPY src ./src
-
 RUN if [ "$USE_CN_MIRROR" = "1" ]; then \
       pip install --no-cache-dir . -i "$PYPI_INDEX"; \
     else \

@@ -96,9 +96,16 @@ class GlobalStockAdapter(BaseStockAdapter):
             schema_version=1,
         )
 
-    def get_limit_up_pool(self, date_str: str) -> pd.DataFrame:
-        # Global markets do not have strict limit-up pool rules
-        return pd.DataFrame()
+    def get_limit_up_pool(self, date_str: str) -> FetchResult:
+        # Global markets do not have strict limit-up pool rules.
+        return FetchResult.unavailable(
+            dataset_name="limit_up_pool",
+            provider="global",
+            requested_trade_date=date_str,
+            error_code="LIMIT_UP_POOL_NOT_SUPPORTED",
+            error_message="global markets do not expose a limit-up pool",
+            schema_version=1,
+        )
 
     def get_limit_down_pool(self, date_str: str) -> pd.DataFrame:
         return pd.DataFrame()

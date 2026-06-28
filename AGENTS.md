@@ -29,8 +29,7 @@ Dragon-Seeking-Formula 是面向 A 股首板进二板场景的盘后与盘中决
 - `src/data_pipeline/`：盘中采集、归一化、存储和告警；
 - `src/recap_scheduler.py`：盘后调度；
 - `data/recap.db`：与 TickFlow 面板共享的 SQLite 契约；
-- `vendor/tickflow-stock-panel/`：由 `vendor/VERSION` 锁定的独立 Git 仓库，
-  不能当作根仓库普通源码处理。
+- `vendor/tickflow-stock-panel/`：已纳入根仓库的 TickFlow 源码区，不再作为独立 Git 仓库处理；其源码与根仓库统一追踪。
 
 ## 不可破坏的领域约束
 

@@ -34,17 +34,26 @@ def _is_index_source(f: FetchResult) -> bool:
     return f.dataset_name == "index_recap"
 
 
-def _index_key_rows_available(f: FetchResult) -> bool:
-    """指数三大关键记录(sh/sz/cy)是否全部不可用。
+def _index_majority_available(f: FetchResult, *, require_majority: bool) -> bool:
+    """至少满足配置要求的主要指数记录。
 
-    方案 7.4.3:"指数三大关键记录全部不可用" 才阻断;部分降级记录 DEGRADED。
-    payload 为空 DataFrame 或 status != OK 视为不可用。
+    STALE 状态（结构合法但过期）仍参与多数判定，由调用方决定是否告警。
     """
     if not _is_index_source(f):
         return False
-    if f.status != DataStatus.OK or f.payload.empty:
+    if f.status in {DataStatus.UNAVAILABLE, DataStatus.INVALID}:
         return False
-    return True
+    if f.payload.empty:
+        return False
+    if "index" not in f.payload.columns:
+        return False
+    required = 2 if require_majority else 1
+    available = {
+        str(v).strip().lower()
+        for v in f.payload["index"].tolist()
+        if str(v).strip()
+    }
+    return len(available & {"sh", "sz", "cy"}) >= required
 
 
 def evaluate_publishable(
@@ -55,6 +64,7 @@ def evaluate_publishable(
     config_valid: bool = True,
     migration_ok: bool = True,
     decision_exception: bool = False,
+    require_index_majority: bool = True,
 ) -> PublicationGateResult:
     """评估发布闸门。
 
@@ -66,6 +76,7 @@ def evaluate_publishable(
         config_valid: 规则配置是否有效(方案 7.4.4)。
         migration_ok: 数据库迁移是否成功(方案 7.4.5)。
         decision_exception: 候选决策是否出现未处理异常(方案 7.4.6)。
+        require_index_majority: 是否要求主要指数满足多数可用。
 
     Returns:
         PublicationGateResult,reason_codes 为 ReasonCode 枚举值的字符串列表。
@@ -85,21 +96,32 @@ def evaluate_publishable(
         reason_codes.append(ReasonCode.CRITICAL_SOURCE_UNAVAILABLE)
     elif pool.status == DataStatus.INVALID:
         reason_codes.append(ReasonCode.SOURCE_SCHEMA_INVALID)
-    elif pool.status == DataStatus.OK:
-        # 日期一致性:as_of 必须等于请求交易日(方案 7.3.2)
-        if pool.as_of != trade_date:
-            reason_codes.append(ReasonCode.SOURCE_SCHEMA_INVALID)
-            warnings.append(
-                f"limit_up_pool as_of={pool.as_of} != trade_date={trade_date}"
-            )
-    # STALE/DEGRADED 的涨停池:降级但不直接阻断(由调用方结合其他来源决定)
+    elif pool.status == DataStatus.STALE:
+        reason_codes.append(ReasonCode.SOURCE_STALE)
+    elif pool.as_of != trade_date:
+        reason_codes.append(ReasonCode.SOURCE_SCHEMA_INVALID)
+        warnings.append(f"limit_up_pool as_of={pool.as_of} != trade_date={trade_date}")
+    elif pool.status == DataStatus.DEGRADED:
+        warnings.append("limit_up_pool degraded but structurally valid")
 
-    # 7.4.3 指数三大关键记录全部不可用
+    # 7.4.3 指数三大关键记录至少满足多数
     index_src = sources.get("index_recap")
     if index_src is None:
         reason_codes.append(ReasonCode.CRITICAL_SOURCE_UNAVAILABLE)
-    elif not _index_key_rows_available(index_src):
+    elif index_src.status == DataStatus.UNAVAILABLE:
         reason_codes.append(ReasonCode.CRITICAL_SOURCE_UNAVAILABLE)
+    elif index_src.status == DataStatus.INVALID:
+        reason_codes.append(ReasonCode.SOURCE_SCHEMA_INVALID)
+    elif index_src.status == DataStatus.STALE:
+        warnings.append("index_recap stale but majority may still be available; continuing")
+        # STALE 不阻断，走下方多数判定
+    elif index_src.as_of != trade_date:
+        reason_codes.append(ReasonCode.SOURCE_SCHEMA_INVALID)
+        warnings.append(f"index_recap as_of={index_src.as_of} != trade_date={trade_date}")
+    elif not _index_majority_available(index_src, require_majority=require_index_majority):
+        reason_codes.append(ReasonCode.CRITICAL_SOURCE_UNAVAILABLE)
+    elif index_src.status == DataStatus.DEGRADED:
+        warnings.append("index_recap degraded but majority available")
 
     # 7.4.4 规则配置无效
     if not config_valid:
@@ -114,8 +136,7 @@ def evaluate_publishable(
         reason_codes.append(ReasonCode.SOURCE_SCHEMA_INVALID)
 
     # 7.4.7 关键输入使用了"默认 0"代替缺失
-    # 由上游 FetchResult 保障:适配器不再写 0;此处不再额外检测,
-    # 因为 sources 已经是结构化结果,不存在隐式 0。
+    # 由上游 FetchResult 保障:适配器不再写 0;此处不再额外检测。
 
     publishable = len(reason_codes) == 0
     return PublicationGateResult(

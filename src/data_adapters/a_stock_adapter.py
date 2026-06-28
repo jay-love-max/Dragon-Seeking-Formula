@@ -8,9 +8,14 @@ import pandas as pd
 import requests
 from mootdx.quotes import Quotes
 
-from contracts import FetchResult
+from contracts import FetchResult, validate_limit_up_pool
 
-from .base_adapter import BaseStockAdapter
+from .base_adapter import (
+    BaseStockAdapter,
+    normalize_lhb_details,
+    normalize_lhb_statistics,
+    normalize_stock_comments,
+)
 
 # schema versions for the FetchResult payloads produced by this adapter.
 TRADING_DAYS_SCHEMA_VERSION = 1
@@ -133,15 +138,170 @@ class AStockDataAdapter(BaseStockAdapter):
             schema_version=INDEX_RECAP_SCHEMA_VERSION,
         )
 
-    def get_limit_up_pool(self, date_str: str) -> pd.DataFrame:
+    def get_limit_up_pool(self, date_str: str) -> FetchResult:
         date_compact = date_str.replace("-", "")
         try:
-            df = ak.stock_zt_pool_em(date=date_compact)
-            if df is not None and not df.empty:
-                return df.copy()
+            raw = ak.stock_zt_pool_em(date=date_compact)
         except Exception as e:
             print(f"[a-stock-data] Error getting limit up pool: {e}")
-        return pd.DataFrame()
+            return FetchResult.unavailable(
+                dataset_name="limit_up_pool",
+                provider="akshare",
+                requested_trade_date=date_str,
+                error_code="LIMIT_UP_POOL_UNAVAILABLE",
+                error_message=str(e),
+                schema_version=1,
+            )
+
+        if raw is None or raw.empty:
+            return FetchResult.unavailable(
+                dataset_name="limit_up_pool",
+                provider="akshare",
+                requested_trade_date=date_str,
+                error_code="EMPTY_POOL",
+                error_message="limit_up_pool empty",
+                schema_version=1,
+            )
+
+        df = raw.copy()
+        rename_map = {
+            "代码": "code",
+            "名称": "name",
+            "连板数": "consecutive_boards",
+            "首次封板时间": "first_seal_time",
+            "炸板次数": "blown_count",
+            "流通市值": "float_mcap_yuan",
+            "封板资金": "seal_funds_yuan",
+            "换手率": "turnover_pct",
+            "所属行业": "sector",
+            "最新价": "price",
+            "涨跌幅": "change_pct",
+            "题材归因": "concept",
+        }
+        df = df.rename(columns={src: dst for src, dst in rename_map.items() if src in df.columns})
+
+        required = [
+            "code",
+            "name",
+            "consecutive_boards",
+            "first_seal_time",
+            "blown_count",
+            "float_mcap_yuan",
+            "seal_funds_yuan",
+            "turnover_pct",
+            "sector",
+            "price",
+            "change_pct",
+        ]
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            return FetchResult.invalid(
+                dataset_name="limit_up_pool",
+                provider="akshare",
+                requested_trade_date=date_str,
+                error_message=f"limit_up_pool missing columns: {missing}",
+                schema_version=1,
+                payload=df,
+            )
+
+        def _normalize_time(value: Any) -> str | None:
+            text = "".join(ch for ch in str(value or "") if ch.isdigit())
+            if not text:
+                return None
+            digits = text.zfill(6)[-6:]
+            return f"{digits[:2]}:{digits[2:4]}:{digits[4:]}"
+
+        normalized = pd.DataFrame()
+        normalized["code"] = (
+            df["code"].astype(str).str.extract(r"(\d{6})", expand=False).fillna("").str.zfill(6)
+        )
+        normalized["name"] = df["name"].astype(str).str.strip()
+        normalized["trade_date"] = date_str
+        normalized["price"] = pd.to_numeric(df["price"], errors="coerce")
+        normalized["change_pct"] = pd.to_numeric(df["change_pct"], errors="coerce")
+        normalized["turnover_pct"] = pd.to_numeric(df["turnover_pct"], errors="coerce")
+        normalized["float_mcap_yuan"] = pd.to_numeric(df["float_mcap_yuan"], errors="coerce")
+        normalized["seal_funds_yuan"] = pd.to_numeric(df["seal_funds_yuan"], errors="coerce")
+        normalized["first_seal_time"] = df["first_seal_time"].map(_normalize_time)
+        normalized["blown_count"] = pd.to_numeric(df["blown_count"], errors="coerce")
+        normalized["consecutive_boards"] = pd.to_numeric(df["consecutive_boards"], errors="coerce")
+        normalized["is_st"] = normalized["name"].str.contains(r"^(\*?ST|S\*ST|退市)", regex=True)
+        normalized["sector"] = df["sector"].fillna("UNKNOWN").astype(str).str.strip().replace("", "UNKNOWN")
+        if "concept" in df.columns:
+            normalized["concept"] = df["concept"].fillna("").astype(str)
+
+        before = len(normalized)
+        normalized = normalized[
+            normalized["code"].str.fullmatch(r"\d{6}", na=False)
+            & normalized["name"].ne("")
+            & normalized["price"].notna()
+            & normalized["change_pct"].notna()
+            & normalized["turnover_pct"].notna()
+            & normalized["float_mcap_yuan"].notna()
+            & normalized["seal_funds_yuan"].notna()
+            & normalized["blown_count"].notna()
+            & normalized["consecutive_boards"].notna()
+            & normalized["sector"].ne("")
+        ].copy()
+        if normalized.empty:
+            return FetchResult.invalid(
+                dataset_name="limit_up_pool",
+                provider="akshare",
+                requested_trade_date=date_str,
+                error_message="limit_up_pool contains no valid rows after normalization",
+                schema_version=1,
+                payload=df,
+            )
+
+        normalized["blown_count"] = normalized["blown_count"].astype(int)
+        normalized["consecutive_boards"] = normalized["consecutive_boards"].astype(int)
+        normalized["is_st"] = normalized["is_st"].astype(bool)
+        normalized["trade_date"] = date_str
+
+        valid, error = validate_limit_up_pool(normalized)
+        if not valid:
+            return FetchResult.invalid(
+                dataset_name="limit_up_pool",
+                provider="akshare",
+                requested_trade_date=date_str,
+                error_message=error or "limit_up_pool invalid",
+                schema_version=1,
+                payload=normalized,
+            )
+
+        warnings = []
+        if len(normalized) != before:
+            warnings.append(f"dropped {before - len(normalized)} malformed limit-up rows")
+
+        if normalized["trade_date"].nunique() != 1 or normalized["trade_date"].iloc[0] != date_str:
+            return FetchResult.invalid(
+                dataset_name="limit_up_pool",
+                provider="akshare",
+                requested_trade_date=date_str,
+                error_message="limit_up_pool trade_date mismatch",
+                schema_version=1,
+                payload=normalized,
+            )
+
+        if warnings:
+            return FetchResult.degraded(
+                dataset_name="limit_up_pool",
+                provider="akshare",
+                requested_trade_date=date_str,
+                as_of=date_str,
+                payload=normalized,
+                schema_version=1,
+                warnings=warnings,
+            )
+
+        return FetchResult.ok(
+            dataset_name="limit_up_pool",
+            provider="akshare",
+            requested_trade_date=date_str,
+            as_of=date_str,
+            payload=normalized,
+            schema_version=1,
+        )
 
     def get_limit_down_pool(self, date_str: str) -> pd.DataFrame:
         date_compact = date_str.replace("-", "")
@@ -374,21 +534,24 @@ class AStockDataAdapter(BaseStockAdapter):
 
     def get_stock_comments(self) -> pd.DataFrame:
         try:
-            return ak.stock_comment_em()
+            raw = ak.stock_comment_em()
+            return normalize_stock_comments(raw)
         except Exception as e:
             print(f"[a-stock-data] Error fetching stock comments: {e}")
             return pd.DataFrame()
 
     def get_lhb_statistics(self) -> pd.DataFrame:
         try:
-            return ak.stock_lhb_stock_statistic_em(symbol="近一月")
+            raw = ak.stock_lhb_stock_statistic_em(symbol="近一月")
+            return normalize_lhb_statistics(raw)
         except Exception as e:
             print(f"[a-stock-data] Error fetching LHB statistics: {e}")
             return pd.DataFrame()
 
     def get_lhb_details(self, start_date: str, end_date: str) -> pd.DataFrame:
         try:
-            return ak.stock_lhb_detail_em(start_date=start_date, end_date=end_date)
+            raw = ak.stock_lhb_detail_em(start_date=start_date, end_date=end_date)
+            return normalize_lhb_details(raw)
         except Exception as e:
             print(f"[a-stock-data] Error fetching LHB details: {e}")
             return pd.DataFrame()

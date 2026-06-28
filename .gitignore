@@ -19,11 +19,22 @@ htmlcov/
 # macOS
 .DS_Store
 
-# Vendored third-party checkout.
-# Restored/locked via scripts/restore-vendor.sh and vendor/VERSION.
-# Keep vendor/VERSION tracked, ignore everything else under vendor/.
-vendor/*
-!vendor/VERSION
+# Monorepo: TickFlow 源码纳入根仓库追踪;保留 vendor 内部自己的 .gitignore。
+# 仅忽略本地环境、缓存、构建产物和数据。
+vendor/tickflow-stock-panel/node_modules/
+vendor/tickflow-stock-panel/dist/
+vendor/tickflow-stock-panel/build/
+vendor/tickflow-stock-panel/.venv/
+vendor/tickflow-stock-panel/**/__pycache__/
+vendor/tickflow-stock-panel/**/.pytest_cache/
+vendor/tickflow-stock-panel/**/data/
+vendor/tickflow-stock-panel/**/*.db
+vendor/tickflow-stock-panel/**/*.db-wal
+vendor/tickflow-stock-panel/**/*.db-shm
+vendor/tickflow-stock-panel/**/*.log
+vendor/tickflow-stock-panel/**/*.tmp
+vendor/tickflow-stock-panel/**/.env
+vendor/tickflow-stock-panel/**/.env.local
 
 # Local env (keep .env.example tracked)
 .env

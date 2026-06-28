@@ -220,6 +220,32 @@ class TestPublishGate(unittest.TestCase):
         result = evaluate_publishable("2026-06-24", is_trading_day=True, sources=sources)
         self.assertTrue(result.publishable)
 
+    def test_publish_gate_blocks_when_index_majority_missing(self):
+        from publish_gate import evaluate_publishable
+
+        sources = {
+            "limit_up_pool": FetchResult.ok(
+                dataset_name="limit_up_pool",
+                provider="akshare",
+                requested_trade_date="2026-06-24",
+                as_of="2026-06-24",
+                payload=pd.DataFrame([{"code": "000001"}]),
+                schema_version=1,
+            ),
+            "index_recap": FetchResult.ok(
+                dataset_name="index_recap",
+                provider="mootdx",
+                requested_trade_date="2026-06-24",
+                as_of="2026-06-24",
+                payload=pd.DataFrame(
+                    [{"index": "sh", "price": 3200.0, "change_pct": 1.2, "amount_yuan": 4.0e11}]
+                ),
+                schema_version=1,
+            ),
+        }
+        result = evaluate_publishable("2026-06-24", is_trading_day=True, sources=sources)
+        self.assertFalse(result.publishable)
+        self.assertIn("CRITICAL_SOURCE_UNAVAILABLE", result.reason_codes)
 
 if __name__ == "__main__":
     unittest.main()

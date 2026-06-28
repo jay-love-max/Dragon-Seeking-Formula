@@ -163,6 +163,17 @@ def _validate(config: dict[str, Any]) -> None:
     top_n = int(config["max_published_candidates"])
     _check(1 <= top_n <= 20, f"max_published_candidates must be 1-20, got {top_n}")
 
+    feature_flags = config.get("feature_flags", {})
+    for key in (
+        "enforce_f19",
+        "enforce_f17",
+        "enforce_f18",
+        "use_adjusted_score",
+        "publish_execution_plan",
+        "personality_enforce",
+    ):
+        _check(isinstance(feature_flags.get(key), bool), f"feature_flags.{key} must be bool")
+
     f19 = config["f19"]
     _check(float(f19["min_seal_funds_yuan"]) >= 0, "f19.min_seal_funds_yuan must be >= 0")
     _check(int(f19["max_blown_count"]) >= 0, "f19.max_blown_count must be >= 0")
@@ -239,11 +250,18 @@ def _validate(config: dict[str, Any]) -> None:
         >= 0.0,
         "personality grade thresholds must be monotonic non-increasing",
     )
+def _resolve_config_path(explicit: Path | str | None, *candidates: Path) -> Path:
+    if explicit is not None:
+        return Path(explicit)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
 
 
 def load_rule_config(path: Path | str | None = None) -> RuleConfig:
-    """加载并校验规则 TOML。配置无效时抛 ConfigError,阻止服务启动。"""
-    cfg_path = Path(path) if path else CONFIG_PATH
+    """加载并校验规则 TOML。配置无效时抛 ConfigError，阻止服务启动。"""
+    cfg_path = _resolve_config_path(path, Path.cwd() / "config" / "rules" / "dragon_formula_v1.toml", CONFIG_PATH)
     with cfg_path.open("rb") as f:
         config = tomllib.load(f)
     _validate(config)
@@ -252,7 +270,7 @@ def load_rule_config(path: Path | str | None = None) -> RuleConfig:
 
 def load_lhb_seats_config(path: Path | str | None = None) -> dict[str, Any]:
     """加载龙虎榜席位配置(校验 schema_version 与 seat_id 唯一)。"""
-    cfg_path = Path(path) if path else LHB_SEATS_PATH
+    cfg_path = _resolve_config_path(path, Path.cwd() / "config" / "lhb_seats_v1.toml", LHB_SEATS_PATH)
     with cfg_path.open("rb") as f:
         config: dict[str, Any] = tomllib.load(f)
     _check(bool(config.get("seat_schema_version")), "lhb seat_schema_version must not be empty")

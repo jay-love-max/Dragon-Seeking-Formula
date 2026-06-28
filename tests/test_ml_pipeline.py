@@ -6,10 +6,11 @@
 - 模型版本信息;
 - 时间泄漏保护(训练数据不包含未来)。
 """
-from __future__ import annotations
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
 
 from ml_pipeline import (
     ModelMetadata,
@@ -60,6 +61,35 @@ class TestModelTraining:
         assert cal is not None
         assert metrics.calibrated is True
         assert metrics.n_calibration_samples >= 50
+    def test_prefit_calibration_fits_base_only_once(self):
+        X, y = _make_dummy_data(200)
+        X_cal, y_cal = _make_dummy_data(100)
+        original_fit = RandomForestClassifier.fit
+        call_count = 0
+
+        def wrapped_fit(self, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return original_fit(self, *args, **kwargs)
+
+        with patch.object(RandomForestClassifier, "fit", wrapped_fit):
+            rf, cal, metrics = train_and_calibrate(
+                X,
+                y,
+                X_cal,
+                y_cal,
+                min_calibration_samples=50,
+            )
+
+        assert rf is not None
+        assert cal is not None
+        assert metrics.calibrated is True
+        assert metrics.n_calibration_samples == 100
+        assert metrics.brier_score is not None
+        assert metrics.log_loss is not None
+        assert metrics.roc_auc is not None
+        assert metrics.pr_auc is not None
+        assert call_count == 1
 
     def test_predict_prob_outputs_valid_range(self):
         X, y = _make_dummy_data(200)

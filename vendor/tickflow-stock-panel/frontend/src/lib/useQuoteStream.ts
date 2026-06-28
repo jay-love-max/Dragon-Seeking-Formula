@@ -1,0 +1,131 @@
+import { useEffect, useRef, useCallback } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { SSE_INVALIDATE_PREFIXES } from './queryKeys'
+import { getQueryConfig } from './useQueryConfig'
+import { toast } from '@/components/Toast'
+import { pushAlertToasts } from '@/components/AlertToast'
+import { API_BASE, type StrategyAlertEvent } from './api'
+
+/**
+ * 全局 SSE hook: 监听后端行情更新推送 + 策略监控通知。
+ *
+ * - 行情更新 (quotes_updated): 根据 sseRefreshPages 配置过滤 invalidation
+ * - 策略监控通知 (strategy_alert): 通过 onAlert 回调弹 toast
+ *
+ * 应在顶层 Layout 中调用一次。
+ */
+export function useQuoteStream(
+  enabled: boolean,
+  sseRefreshPages: Record<string, boolean> | undefined,
+  onAlert?: (alerts: StrategyAlertEvent[]) => void,
+) {
+  const qc = useQueryClient()
+  const esRef = useRef<EventSource | null>(null)
+  const retryRef = useRef<ReturnType<typeof setTimeout>>()
+  const pagesRef = useRef(sseRefreshPages)
+  pagesRef.current = sseRefreshPages
+
+  const handleAlerts = useCallback((alerts: StrategyAlertEvent[]) => {
+    // depth 系统接管通知: 单独处理, 不走 strategy 回调
+    const depthAlerts = alerts.filter(a => a.source === 'depth')
+    const strategyAlerts = alerts.filter(a => a.source !== 'depth')
+
+    // depth 通知直接 toast(防刷屏: 后端已在状态切换时才推)
+    for (const a of depthAlerts.slice(0, 1)) {
+      toast(a.message, 'success')
+    }
+
+    // 监控告警: 用专用 AlertToast (整批只响一声, 每条都弹, 受 maxVisible 上限保护)
+    if (strategyAlerts.length > 0) {
+      // 有 onAlert 回调时走回调, 否则弹 AlertToast
+      if (onAlert) {
+        onAlert(strategyAlerts)
+      }
+      // 批量弹通知 (去掉了 slice(0,2) 截断, 让每只新命中都弹 toast; 声音整批只响一次)
+      pushAlertToasts(strategyAlerts as any)
+    }
+  }, [onAlert])
+
+  const enabledRef = useRef(enabled)
+  enabledRef.current = enabled
+
+  useEffect(() => {
+    // SSE 始终连接 — 监控告警不依赖实时行情开关
+    // (quotes_updated 行情刷新受 enabled 控制, strategy_alert 始终处理)
+
+    const connect = () => {
+      const es = new EventSource(`${API_BASE}/api/intraday/stream`)
+      esRef.current = es
+
+      // sse-starlette ping 心跳走 SSE comment，不会到达这里
+
+      es.addEventListener('quotes_updated', () => {
+        // 实时行情未开启时不处理行情刷新
+        if (!enabledRef.current) return
+        // 根据用户配置过滤 invalidation
+        const pages = pagesRef.current
+        if (pages) {
+          // 只 invalidate 开启的页面对应的 prefix
+          const activePrefixes = SSE_INVALIDATE_PREFIXES.filter((p) => {
+            // 'quote-status' 始终刷新 (全局状态)
+            if (p === 'quote-status') return true
+            return pages[p] !== false
+          })
+          qc.invalidateQueries({
+            predicate: (query) =>
+              activePrefixes.some(
+                (prefix) => String(query.queryKey[0]).startsWith(prefix),
+              ),
+          })
+        } else {
+          // 无配置时全部刷新 (向后兼容)
+          qc.invalidateQueries({
+            predicate: (query) =>
+              SSE_INVALIDATE_PREFIXES.some(
+                (prefix) => String(query.queryKey[0]).startsWith(prefix),
+              ),
+          })
+        }
+      })
+
+      es.addEventListener('depth_updated', () => {
+        // 五档修正完成: 刷新连板梯队 + 看板封单数据。
+        // 不受实时行情开关限制 — 修正轮询独立于行情轮询, 用户开了修正就想看实时封单。
+        qc.invalidateQueries({ queryKey: ['limit-ladder'] })
+        qc.invalidateQueries({ queryKey: ['overview-market'] })
+      })
+
+      es.addEventListener('strategy_alert', (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data)
+            const alerts: StrategyAlertEvent[] = data.alerts || []
+            if (alerts.length > 0) {
+              handleAlerts(alerts)
+              // 实时刷新触发记录列表 + 监控中心徽标
+              qc.invalidateQueries({ queryKey: ['alerts'] })
+              qc.invalidateQueries({ queryKey: ['alerts-total'] })
+            }
+        } catch {
+          // 忽略解析错误
+        }
+      })
+
+      es.onerror = () => {
+        es.close()
+        esRef.current = null
+        const delay = getQueryConfig().sse.reconnectDelay
+        retryRef.current = setTimeout(connect, delay)
+      }
+    }
+
+    connect()
+
+    return () => {
+      clearTimeout(retryRef.current)
+      if (esRef.current) {
+        esRef.current.close()
+        esRef.current = null
+      }
+    }
+  }, [qc, handleAlerts])
+}

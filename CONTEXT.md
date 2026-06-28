@@ -78,40 +78,16 @@ _Avoid_: 低风险、中风险、高风险、健康、违约
 
 ## 工程初始化
 
-本仓库的复盘引擎（`src/recap_engine.py`）在运行时依赖同目录下 vendored 的 `tickflow-stock-panel` 面板（读取其同步的本地财务 Parquet 与共享 AI 配置）。该面板以独立 git 仓库形式置于 `vendor/tickflow-stock-panel/`，**不纳入本仓库版本控制**，而是通过版本锁文件 `vendor/VERSION` 记录其 commit hash。
+本仓库的复盘引擎（`src/recap_engine.py`）与 TickFlow 面板（`vendor/tickflow-stock-panel/`）现已作为同一产品由根仓库统一追踪、构建、测试和交付。
 
-**首次 clone 本仓库后必须执行：**
+**当前工程约定：**
 
-> ⚠️ 首次 clone 本仓库后，必须先运行 `bash scripts/restore-vendor.sh` 恢复 `vendor/tickflow-stock-panel`，再执行 Docker 构建或 `scripts/dev.sh`。
+1. 根目录是唯一 Git 根，`vendor/tickflow-stock-panel/` 不再作为独立仓库恢复或管理；
+2. `vendor/VERSION` 仅记录上游纳入时的基线 commit，不再驱动恢复脚本；
+3. 所有源码、测试、Docker 和发布脚本均从根仓库执行；
+4. 任何历史上提到“restore vendor / checkout vendor”的说明已失效。
 
-```bash
-bash scripts/restore-vendor.sh    # 克隆并 checkout 到 vendor/VERSION 锁定的版本
-bash scripts/check-vendor.sh      # （可选）校验 vendor 是否在锁定版本
-```
-
-### 升级 tickflow-stock-panel 版本流程
-
-1. 在本地开发环境中（仅一次）：
-   ```bash
-   cd vendor/tickflow-stock-panel
-   git fetch origin
-   git checkout <new-commit-or-tag>
-   ```
-
-2. 将新的 commit hash 写入 `vendor/VERSION`（仅一行 40 位 SHA）并提交：
-   ```bash
-   git -C vendor/tickflow-stock-panel rev-parse HEAD > vendor/VERSION
-   git commit -am "chore: bump tickflow-stock-panel to <sha>"
-   ```
-
-3. 其他开发者或 CI 通过：
-   ```bash
-   bash scripts/restore-vendor.sh
-   bash scripts/check-vendor.sh
-   ```
-   将本地 vendor 恢复到锁定版本。
-
-**每日运行复盘：**
+**日常运行复盘：**
 
 ```bash
 bash run_daily.sh                 # 等价于 python3 src/recap_engine.py [--date YYYY-MM-DD | --backfill N]
@@ -123,7 +99,7 @@ bash run_daily.sh                 # 等价于 python3 src/recap_engine.py [--dat
 docker compose up --build -d
 ```
 
-Docker Compose 是唯一的生产拓扑：`pipeline` 负责盘中采集，`recap-scheduler`
+Docker Compose 仍是唯一的生产拓扑：`pipeline` 负责盘中采集，`recap-scheduler`
 在工作日 15:10 运行盘后复盘，`tickflow` 提供面板。三者通过根目录
 `data/recap.db` 共享同一个 SQLite 数据库。`ecosystem.config.cjs` 仅作为本地
 PM2 备用入口，不再包含机器相关绝对路径。

@@ -18,6 +18,8 @@ dependencies = [
     "aiohttp",
     "apscheduler>=3.10",
     "apsw>=3.50.4",
+    "exchange-calendars",
+    "pandera[pandas]",
 ]
 [project.optional-dependencies]
 # openai is soft-referenced (try/except) in recap_engine.py for the UZI AI audit path.
@@ -30,9 +32,6 @@ dev = [
     "tomli-w",
     # asyncio test support for src/data_pipeline collector tests.
     "pytest-asyncio",
-    # config/rules/dragon_formula_v1.toml mandates exchange_calendars + pandera (ADR 0003).
-    "exchange-calendars",
-    "pandera[pandas]",
 ]
 
 [tool.setuptools]

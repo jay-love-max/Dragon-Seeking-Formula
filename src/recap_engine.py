@@ -40,7 +40,9 @@ from db import (
     connect as db_connect,
 )
 from execution_policy import auction_matrix, buy_plan, defensive_sell_plan  # noqa: E402
+from feature_engineering import apply_f14_boost, check_recent_4d_2b  # noqa: E402
 from market_risk import compute_adjusted_score, evaluate_market_risk  # noqa: E402
+from ml_pipeline import split_time_series_calibration, train_and_calibrate  # noqa: E402
 from stock_personality import (  # noqa: E402
     compute_personality,
     personality_blocked_reason,
@@ -110,8 +112,8 @@ def _index_fetchresult_to_legacy_dict(result):
     if not result.is_ok or result.payload.empty:
         return {}
     recap = {}
-    sh_amount = 0.0
-    sz_amount = 0.0
+    sh_amount = None
+    sz_amount = None
     for _, row in result.payload.iterrows():
         name = str(row["index"])
         recap[name] = {
@@ -122,8 +124,11 @@ def _index_fetchresult_to_legacy_dict(result):
             sh_amount = float(row["amount_yuan"])
         elif name == "sz":
             sz_amount = float(row["amount_yuan"])
-    total_turnover = (sh_amount + sz_amount) / 1e9
-    recap["total_turnover"] = round(total_turnover, 2) if total_turnover > 0 else 0.0
+    if sh_amount is not None and sz_amount is not None:
+        total_turnover = (sh_amount + sz_amount) / 1e9
+        recap["total_turnover"] = round(total_turnover, 2)
+    else:
+        recap["total_turnover"] = None
     return recap
 
 def get_previous_trading_day(date_str, trade_dates):
@@ -245,17 +250,17 @@ def _is_missing_value(value):
 
 
 def _execution_profile(row):
-    first_seal_time = row.get("first_seal_time") or row.get("首次封板时间") or ""
+    first_seal_time = row.get("first_seal_time") or ""
     parsed_first_seal_sec = _parse_time_to_seconds(first_seal_time)
     first_seal_sec = time_to_seconds(first_seal_time)
     missing_first_seal = _is_missing_value(first_seal_time) or parsed_first_seal_sec is None
-    blown = _coerce_int(row.get("blown_count", row.get("炸板次数")), 0)
-    turnover = _coerce_float(row.get("turnover", row.get("换手率")), 0.0)
+    blown = _coerce_int(row.get("blown_count"), 0)
+    turnover = _coerce_float(row.get("turnover", row.get("turnover_pct")), 0.0)
     seal_ratio = _coerce_float(row.get("seal_ratio"), 0.0)
 
     if seal_ratio <= 0:
-        seal_funds = _coerce_float(row.get("seal_funds", row.get("封板资金")), 0.0)
-        float_mcap = _coerce_float(row.get("float_mcap", row.get("流通市值")), 0.0)
+        seal_funds = _coerce_float(row.get("seal_funds", row.get("seal_funds_yuan")), 0.0)
+        float_mcap = _coerce_float(row.get("float_mcap", row.get("float_mcap_yuan")), 0.0)
         if float_mcap > 0:
             seal_ratio = seal_funds / float_mcap * 100
 
@@ -311,23 +316,24 @@ def _apply_realtime_snapshot(df, snapshot):
         return df
 
     df = df.copy()
-    code_col = "代码" if "代码" in df.columns else "code" if "code" in df.columns else None
-    if code_col is None:
+    if "code" not in df.columns:
         return df
 
+    # df_pool is canonical English (LimitUpPoolSchema); realtime_snapshot stores
+    # legacy short names (turnover/float_mcap/seal_funds without _pct/_yuan).
     field_map = {
-        "名称": "name",
-        "最新价": "price",
-        "涨跌幅": "change_pct",
-        "换手率": "turnover",
-        "流通市值": "float_mcap",
-        "封板资金": "seal_funds",
-        "首次封板时间": "first_seal_time",
-        "炸板次数": "blown_count",
-        "所属行业": "sector",
+        "name": "name",
+        "price": "price",
+        "change_pct": "change_pct",
+        "turnover_pct": "turnover",
+        "float_mcap_yuan": "float_mcap",
+        "seal_funds_yuan": "seal_funds",
+        "first_seal_time": "first_seal_time",
+        "blown_count": "blown_count",
+        "sector": "sector",
     }
 
-    codes = df[code_col].astype(str).str.zfill(6)
+    codes = df["code"].astype(str).str.zfill(6)
     for idx, code in codes.items():
         record = snapshot.get(code)
         if not record:
@@ -632,14 +638,20 @@ def fetch_northbound_flow(date_str=None):
     return ADAPTER.get_northbound_flow(date_str)
 
 def generate_playbook(row, sector_count, is_one_word):
-    """Generate detailed momentum trading playbooks based on stock metrics — delegates to shared scorer."""
+    """Generate detailed momentum trading playbooks based on stock metrics."""
     from scorer import generate_playbook as _gp
+
+    sector = row.get("sector", "")
+    time_str = row.get("first_seal_time", "")
+    blown = int(row.get("blown_count", 0) or 0)
+    turnover = float(row.get("turnover_pct", 0.0) or 0.0)
+    score = int(row.get("relay_score", 0) or 0)
     return _gp(
-        sector=row["所属行业"],
-        time_str=row["首次封板时间"],
-        blown=int(row["炸板次数"]),
-        turnover=float(row["换手率"]),
-        score=int(row["接力指数"]),
+        sector=sector,
+        time_str=time_str,
+        blown=blown,
+        turnover=turnover,
+        score=score,
         sector_limit_ups=sector_count,
     )
 
@@ -903,10 +915,10 @@ def _build_uzi_analysis_payload(candidate, market=None, finance=None, comment=No
         _make_evidence("candidate_row", f"local://candidates/{code}/{date_str}", f"题材 {concept}，玩法 {playbook}", date_str),
     ]
 
-    pe_ttm = _safe_float(comment.get("市盈率"))
-    main_cost = _safe_float(comment.get("主力成本"))
-    comment_score = _safe_float(comment.get("综合得分"))
-    attention = _safe_float(comment.get("关注指数"))
+    pe_ttm = _safe_float(comment.get("pe_ttm", comment.get("市盈率")))
+    main_cost = _safe_float(comment.get("main_cost", comment.get("主力成本")))
+    comment_score = _safe_float(comment.get("comment_score", comment.get("综合得分")))
+    attention = _safe_float(comment.get("attention", comment.get("关注指数")))
     if any(v is not None for v in (pe_ttm, main_cost, comment_score, attention)):
         dim_commentary["10_valuation"] = f"市盈率 {_fmt_num(pe_ttm, 2)} / 主力成本 {_fmt_num(main_cost, 2)} / 综合得分 {_fmt_num(comment_score, 0)} / 关注指数 {_fmt_num(attention, 0)}"
         filled_dims.append("10_valuation")
@@ -923,10 +935,10 @@ def _build_uzi_analysis_payload(candidate, market=None, finance=None, comment=No
         _make_evidence("candidate_row", f"local://events/{code}/{date_str}", f"{summary or '暂无摘要'}", date_str),
         _make_evidence("market_recap", f"local://market_recap/{date_str}", f"涨停 {limit_ups} 家，跌停 {limit_downs} 家，晋级率 {promotion_rate}", date_str),
     ]
-    lhb_net_buy = _safe_float(_pick(lhb_detail.get("龙虎榜净买额"), lhb_stat.get("龙虎榜净买额"), None))
-    lhb_times = _safe_int(_pick(lhb_stat.get("上榜次数"), lhb_detail.get("上榜次数"), 0), 0)
+    lhb_net_buy = _safe_float(_pick(lhb_detail.get("net_buy_yuan"), lhb_stat.get("net_buy_yuan"), None))
+    lhb_times = _safe_int(_pick(lhb_stat.get("list_count"), lhb_detail.get("list_count"), 0), 0)
     if lhb_stat or lhb_detail:
-        dim_commentary["16_lhb"] = f"龙虎榜 {lhb_times} 次，净买 {_fmt_yi(lhb_net_buy, 2)}；机构买入次数 {_safe_int(_pick(lhb_stat.get('买方机构次数'), 0), 0)}"
+        dim_commentary["16_lhb"] = f"龙虎榜 {lhb_times} 次，净买 {_fmt_yi(lhb_net_buy, 2)}；机构买入次数 {_safe_int(_pick(lhb_stat.get('inst_buy_count'), 0), 0)}"
         filled_dims.append("16_lhb")
     else:
         dim_commentary["16_lhb"] = "龙虎榜快照待补：尚未接入上榜次数、净买额和机构席位明细。"
@@ -1176,6 +1188,45 @@ def _call_uzi_audit_model(prompt_payload):
         message = getattr(first, "message", None)
         content = getattr(message, "content", "") or ""
     return _parse_uzi_json(content)
+
+
+def _load_lhb_maps(date_str: str) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Load LHB statistics and detail maps keyed by 6-digit code.
+
+    Both maps are built from the same 30-day window. Network or parse errors
+    return empty dicts so the caller never has to handle exceptions.
+    """
+    stat_map: dict[str, dict[str, Any]] = {}
+    detail_map: dict[str, dict[str, Any]] = {}
+    try:
+        df = ADAPTER.get_lhb_statistics()
+        if df is not None and not df.empty:
+            df = df.copy()
+            if "code" in df.columns:
+                df["code"] = df["code"].astype(str).str.zfill(6)
+                stat_map = {row["code"]: row for row in df.to_dict("records")}
+    except Exception:
+        pass
+
+    try:
+        end_date = date_str.replace("-", "")
+        start_date = (datetime.strptime(date_str, "%Y-%m-%d") - timedelta(days=30)).strftime("%Y%m%d")
+        df = ADAPTER.get_lhb_details(start_date=start_date, end_date=end_date)
+        if df is not None and not df.empty:
+            df = df.copy()
+            if "code" in df.columns:
+                df["code"] = df["code"].astype(str).str.zfill(6)
+            if "list_date" in df.columns:
+                df = df.sort_values(["list_date", "net_buy_yuan"], ascending=[False, False])
+            for row in df.to_dict("records"):
+                if "code" in row:
+                    detail_map.setdefault(row["code"], row)
+    except Exception:
+        pass
+
+    return stat_map, detail_map
+
+
 def run_local_uzi_emulator(conn, date_str, candidates, sector_counts):
     """Run local rule-based financial emulator for Top 5 candidates"""
     cursor = conn.cursor()
@@ -1184,35 +1235,13 @@ def run_local_uzi_emulator(conn, date_str, candidates, sector_counts):
         comment_df = ADAPTER.get_stock_comments()
         if comment_df is not None and not comment_df.empty:
             comment_df = comment_df.copy()
-            comment_df["代码"] = comment_df["代码"].astype(str).str.zfill(6)
-            comment_map = {row["代码"]: row for row in comment_df.to_dict("records")}
+            if "code" in comment_df.columns:
+                comment_df["code"] = comment_df["code"].astype(str).str.zfill(6)
+                comment_map = {row["code"]: row for row in comment_df.to_dict("records")}
     except Exception:
         comment_map = {}
 
-    lhb_stat_map = {}
-    try:
-        lhb_stat_df = ADAPTER.get_lhb_statistics()
-        if lhb_stat_df is not None and not lhb_stat_df.empty:
-            lhb_stat_df = lhb_stat_df.copy()
-            lhb_stat_df["代码"] = lhb_stat_df["代码"].astype(str).str.zfill(6)
-            lhb_stat_map = {row["代码"]: row for row in lhb_stat_df.to_dict("records")}
-    except Exception:
-        lhb_stat_map = {}
-
-    lhb_detail_map = {}
-    try:
-        end_date = date_str.replace("-", "")
-        start_date = (datetime.strptime(date_str, "%Y-%m-%d") - timedelta(days=30)).strftime("%Y%m%d")
-        lhb_detail_df = ADAPTER.get_lhb_details(start_date=start_date, end_date=end_date)
-        if lhb_detail_df is not None and not lhb_detail_df.empty:
-            lhb_detail_df = lhb_detail_df.copy()
-            lhb_detail_df["代码"] = lhb_detail_df["代码"].astype(str).str.zfill(6)
-            if "上榜日" in lhb_detail_df.columns:
-                lhb_detail_df = lhb_detail_df.sort_values(["上榜日", "龙虎榜净买额"], ascending=[False, False])
-            for row in lhb_detail_df.to_dict("records"):
-                lhb_detail_map.setdefault(row["代码"], row)
-    except Exception:
-        lhb_detail_map = {}
+    lhb_stat_map, lhb_detail_map = _load_lhb_maps(date_str)
 
     results = []
     market = get_index_recap(date_str)
@@ -1262,7 +1291,7 @@ def run_local_uzi_emulator(conn, date_str, candidates, sector_counts):
         elif seal_sec <= 3900:
             mom_score += 10
 
-        turnover = float(c["turnover"])
+        turnover = float(c["turnover_pct"])
         if 4.0 <= turnover <= 12.0:
             mom_score += 10
 
@@ -1418,6 +1447,32 @@ def run_real_uzi_audit(conn, date_str, candidates, uzi_path):
     except Exception as e:
         print(f"[UZI Audit] AI path failed, falling back to local rules: {e}")
         return run_local_uzi_emulator(conn, date_str, candidates, sector_counts)
+def _build_uzi_candidates(df_1b: pd.DataFrame, ranked: list[Any]) -> list[dict[str, Any]]:
+    """Only keep published Top5 rows for UZI audit."""
+    df_by_code = df_1b.set_index("code", drop=False)
+    cands_for_audit: list[dict[str, Any]] = []
+    for d in ranked:
+        if getattr(d.publication_status, "value", d.publication_status) != "PUBLISHED_TOP5":
+            continue
+        if d.code not in df_by_code.index:
+            continue
+        row = df_by_code.loc[d.code]
+        if isinstance(row, pd.DataFrame):
+            row = row.iloc[0]
+        raw_time = str(row["first_seal_time"])
+        first_seal_time = f"{raw_time[:2]}:{raw_time[2:4]}:{raw_time[4:]}" if len(raw_time) == 6 else raw_time
+        cands_for_audit.append(
+            {
+                "code": row["code"],
+                "name": row["name"],
+                "first_seal_time": first_seal_time,
+                "turnover_pct": float(row["turnover_pct"]),
+                "sector": row["sector"],
+            }
+        )
+    return cands_for_audit
+
+
 def run_recap(date_str, trade_dates, observation_only=False):
     """Execute recap for a specific trading day."""
     from contracts import FetchResult, validate_limit_up_pool
@@ -1472,51 +1527,35 @@ def run_recap(date_str, trade_dates, observation_only=False):
         except Exception:
             snapshot = {}
 
-        print("Fetching index market recap...")
-        idx_recap = get_index_recap(date_str)
         idx_fetch = get_index_recap_fetchresult(date_str)
+        idx_recap = _index_fetchresult_to_legacy_dict(idx_fetch)
 
         print("Fetching limit-up pool...")
         try:
-            df_zt = ADAPTER.get_limit_up_pool(date_str)
-            print(f"Total limit-up stocks: {len(df_zt)}")
+            pool_fetch = ADAPTER.get_limit_up_pool(date_str)
+            print(f"Total limit-up stocks: {pool_fetch.row_count}")
         except Exception as e:
             print(f"Failed to fetch limit-up pool for {date_str}: {e}")
-            df_zt = pd.DataFrame()
-
-        if df_zt is None:
-            df_zt = pd.DataFrame()
-
-        if not df_zt.empty:
-            valid, error = validate_limit_up_pool(df_zt)
-            pool_fetch = (
-                FetchResult.ok(
-                    dataset_name="limit_up_pool",
-                    provider="akshare",
-                    requested_trade_date=date_str,
-                    as_of=date_str,
-                    payload=df_zt,
-                    schema_version=1,
-                )
-                if valid
-                else FetchResult.invalid(
+            pool_fetch = FetchResult.unavailable(
+                dataset_name="limit_up_pool",
+                provider="akshare",
+                requested_trade_date=date_str,
+                error_code="FETCH_FAILED",
+                error_message=str(e),
+                schema_version=1,
+            )
+        df_pool = pool_fetch.payload.copy()
+        if pool_fetch.is_ok and not df_pool.empty:
+            valid, error = validate_limit_up_pool(df_pool)
+            if not valid:
+                pool_fetch = FetchResult.invalid(
                     dataset_name="limit_up_pool",
                     provider="akshare",
                     requested_trade_date=date_str,
                     error_message=error or "limit_up_pool invalid",
                     schema_version=1,
-                    payload=df_zt,
+                    payload=df_pool,
                 )
-            )
-        else:
-            pool_fetch = FetchResult.unavailable(
-                dataset_name="limit_up_pool",
-                provider="akshare",
-                requested_trade_date=date_str,
-                error_code="EMPTY_POOL",
-                error_message="limit_up_pool empty",
-                schema_version=1,
-            )
 
         print("Fetching limit-down pool...")
         limit_downs = 0
@@ -1532,14 +1571,16 @@ def run_recap(date_str, trade_dates, observation_only=False):
         if not isinstance(ths_reasons, dict):
             ths_reasons = {}
 
-        if not df_zt.empty:
-            df_zt = df_zt.copy()
-            df_zt["代码"] = df_zt["代码"].astype(str).str.zfill(6)
-            df_zt["题材归因"] = df_zt["代码"].map(ths_reasons).fillna("")
+        if not df_pool.empty:
+            df_pool = df_pool.copy()
+            df_pool["code"] = df_pool["code"].astype(str).str.zfill(6)
+            if "concept" not in df_pool.columns:
+                df_pool["concept"] = ""
+            df_pool["concept"] = df_pool["code"].map(ths_reasons).fillna(df_pool["concept"]).fillna("")
             if snapshot:
-                df_zt = _apply_realtime_snapshot(df_zt, snapshot)
-            sector_counts = df_zt["所属行业"].value_counts().to_dict()
-            df_1b = df_zt[df_zt["连板数"] == 1].copy().reset_index(drop=True)
+                df_pool = _apply_realtime_snapshot(df_pool, snapshot)
+            sector_counts = df_pool["sector"].value_counts().to_dict()
+            df_1b = df_pool[df_pool["consecutive_boards"] == 1].copy().reset_index(drop=True)
         else:
             sector_counts = {}
             df_1b = pd.DataFrame()
@@ -1568,8 +1609,8 @@ def run_recap(date_str, trade_dates, observation_only=False):
             DB_PATH,
             run_id=run_id,
             dataset_name="limit_up_pool",
-            provider="akshare",
-            as_of=date_str if not df_zt.empty else None,
+            provider=pool_fetch.provider,
+            as_of=pool_fetch.as_of,
             fetched_at=pool_fetch.fetched_at,
             status=pool_fetch.status.value,
             row_count=pool_fetch.row_count,
@@ -1580,7 +1621,7 @@ def run_recap(date_str, trade_dates, observation_only=False):
             DB_PATH,
             run_id=run_id,
             dataset_name="index_recap",
-            provider="akshare",
+            provider=idx_fetch.provider,
             as_of=idx_fetch.as_of,
             fetched_at=idx_fetch.fetched_at,
             status=idx_fetch.status.value,
@@ -1598,18 +1639,27 @@ def run_recap(date_str, trade_dates, observation_only=False):
         from scorer import compute_relay_score, generate_playbook
 
         if not df_1b.empty:
-            df_1b["接力指数"] = df_1b.apply(
-                lambda r: compute_relay_score(r.to_dict(), sector_counts.get(r["所属行业"], 1)),
+            df_1b["relay_score"] = df_1b.apply(
+                lambda r: compute_relay_score(
+                    {
+                        "first_seal_time": r["first_seal_time"],
+                        "blown_count": r["blown_count"],
+                        "float_mcap": r["float_mcap_yuan"],
+                        "seal_funds": r["seal_funds_yuan"],
+                        "turnover": r["turnover_pct"],
+                    },
+                    sector_counts.get(r["sector"], 1),
+                ),
                 axis=1,
             ).astype(int)
-            df_1b["操作建议"] = df_1b.apply(
+            df_1b["playbook"] = df_1b.apply(
                 lambda r: generate_playbook(
-                    sector=r["所属行业"],
-                    time_str=r["首次封板时间"],
-                    blown=int(r["炸板次数"]),
-                    turnover=float(r["换手率"]),
-                    score=int(r["接力指数"]),
-                    sector_limit_ups=sector_counts.get(r["所属行业"], 1),
+                    sector=r["sector"],
+                    time_str=r["first_seal_time"],
+                    blown=int(r["blown_count"]),
+                    turnover=float(r["turnover_pct"]),
+                    score=int(r["relay_score"]),
+                    sector_limit_ups=sector_counts.get(r["sector"], 1),
                 ),
                 axis=1,
             )
@@ -1617,10 +1667,10 @@ def run_recap(date_str, trade_dates, observation_only=False):
         sector_ranking_list = []
         for sec_name, count in sorted_sectors[:10]:
             leader_name = "无"
-            df_sec = df_zt[df_zt["所属行业"] == sec_name] if not df_zt.empty else pd.DataFrame()
+            df_sec = df_pool[df_pool["sector"] == sec_name] if not df_pool.empty else pd.DataFrame()
             if not df_sec.empty:
-                df_sec_sorted = df_sec.sort_values(by=["连板数", "首次封板时间"], ascending=[False, True])
-                leader_name = df_sec_sorted.iloc[0]["名称"]
+                df_sec_sorted = df_sec.sort_values(by=["consecutive_boards", "first_seal_time"], ascending=[False, True])
+                leader_name = df_sec_sorted.iloc[0]["name"]
             sector_ranking_list.append({"name": sec_name, "count": count, "leader": leader_name})
         sector_ranking_json = json.dumps(sector_ranking_list, ensure_ascii=False)
 
@@ -1640,8 +1690,8 @@ def run_recap(date_str, trade_dates, observation_only=False):
             finally:
                 conn.close()
             if prev_candidates:
-                df_2b = df_zt[df_zt["连板数"] == 2] if not df_zt.empty else pd.DataFrame()
-                today_2b_codes = set(df_2b["代码"].tolist()) if not df_2b.empty else set()
+                df_2b = df_pool[df_pool["consecutive_boards"] == 2] if not df_pool.empty else pd.DataFrame()
+                today_2b_codes = set(df_2b["code"].tolist()) if not df_2b.empty else set()
                 successful_promotions = set(prev_candidates).intersection(today_2b_codes)
                 promotion_rate = (len(successful_promotions) / len(prev_candidates)) * 100
                 conn = db_connect(DB_PATH)
@@ -1668,7 +1718,7 @@ def run_recap(date_str, trade_dates, observation_only=False):
             hgt_flow, sgt_flow = fetch_northbound_flow(date_str)
             print(f"Northbound Flow - HGT: {hgt_flow:.2f}亿, SGT: {sgt_flow:.2f}亿")
 
-        total_lu = int(len(df_zt))
+        total_lu = int(len(df_pool))
         sentiment_label = "中性"
         if total_lu >= 110 and limit_downs <= 5:
             sentiment_label = "极度活跃"
@@ -1680,16 +1730,15 @@ def run_recap(date_str, trade_dates, observation_only=False):
             sentiment_label = "低迷降温"
         elif total_lu <= 40:
             sentiment_label = "观望低频"
-
         market_recap_row = {
             "date": date_str,
-            "sh_price": idx_recap.get("sh", {}).get("price", 0.0),
-            "sh_change": idx_recap.get("sh", {}).get("change", 0.0),
-            "sz_price": idx_recap.get("sz", {}).get("price", 0.0),
-            "sz_change": idx_recap.get("sz", {}).get("change", 0.0),
-            "cy_price": idx_recap.get("cy", {}).get("price", 0.0),
-            "cy_change": idx_recap.get("cy", {}).get("change", 0.0),
-            "total_turnover": idx_recap.get("total_turnover", 0.0),
+            "sh_price": idx_recap.get("sh", {}).get("price"),
+            "sh_change": idx_recap.get("sh", {}).get("change"),
+            "sz_price": idx_recap.get("sz", {}).get("price"),
+            "sz_change": idx_recap.get("sz", {}).get("change"),
+            "cy_price": idx_recap.get("cy", {}).get("price"),
+            "cy_change": idx_recap.get("cy", {}).get("change"),
+            "total_turnover": idx_recap.get("total_turnover"),
             "limit_ups": total_lu,
             "limit_downs": limit_downs,
             "promotion_rate": round(promotion_rate, 2),
@@ -1699,26 +1748,26 @@ def run_recap(date_str, trade_dates, observation_only=False):
             "sector_ranking": sector_ranking_json,
         }
 
-        persist_limit_up_archive(DB_PATH, date_str, df_zt.to_dict("records") if not df_zt.empty else [])
+        persist_limit_up_archive(DB_PATH, date_str, df_pool.to_dict("records") if not df_pool.empty else [])
         persist_market_recap(DB_PATH, market_recap_row)
         for _, row in df_1b.iterrows() if not df_1b.empty else []:
             persist_observation(
                 DB_PATH,
                 {
                     "trade_date": date_str,
-                    "code": str(row["代码"]).zfill(6),
-                    "name": str(row["名称"]),
-                    "price": float(row["最新价"]),
-                    "change_pct": float(row["涨跌幅"]),
-                    "turnover_pct": float(row["换手率"]),
-                    "float_mcap_yuan": float(row["流通市值"]),
-                    "seal_funds_yuan": float(row["封板资金"]),
-                    "first_seal_time": _normalize_time(row["首次封板时间"]),
-                    "blown_count": int(row["炸板次数"]),
-                    "consecutive_boards": int(row["连板数"]),
-                    "is_st": "ST" in str(row["名称"]) or "退市" in str(row["名称"]),
-                    "sector": str(row["所属行业"]),
-                    "concept": str(row.get("题材归因", "")),
+                    "code": str(row["code"]).zfill(6),
+                    "name": str(row["name"]),
+                    "price": float(row["price"]),
+                    "change_pct": float(row["change_pct"]),
+                    "turnover_pct": float(row["turnover_pct"]),
+                    "float_mcap_yuan": float(row["float_mcap_yuan"]),
+                    "seal_funds_yuan": float(row["seal_funds_yuan"]),
+                    "first_seal_time": _normalize_time(row["first_seal_time"]),
+                    "blown_count": int(row["blown_count"]),
+                    "consecutive_boards": int(row["consecutive_boards"]),
+                    "is_st": bool(row["is_st"]) if "is_st" in row else ("ST" in str(row["name"]) or "退市" in str(row["name"])),
+                    "sector": str(row["sector"]),
+                    "concept": str(row.get("concept", "")),
                 },
             )
         if observation_only:
@@ -1726,11 +1775,11 @@ def run_recap(date_str, trade_dates, observation_only=False):
             print(f"[gate] {date_str} observation-only mode: observations written, publishing skipped.")
             return False
 
-        current_max_boards = int(pd.to_numeric(df_zt["连板数"], errors="coerce").fillna(0).max()) if not df_zt.empty else 0
+        current_max_boards = int(pd.to_numeric(df_pool["consecutive_boards"], errors="coerce").fillna(0).max()) if not df_pool.empty else 0
         prev_one_board_codes: list[str] = []
         prev_two_boards_codes: list[str] = []
-        today_two_boards_codes: list[str] = df_zt.loc[df_zt["连板数"] == 2, "代码"].tolist() if not df_zt.empty else []
-        today_three_boards_codes: list[str] = df_zt.loc[df_zt["连板数"] == 3, "代码"].tolist() if not df_zt.empty else []
+        today_two_boards_codes: list[str] = df_pool.loc[df_pool["consecutive_boards"] == 2, "code"].tolist() if not df_pool.empty else []
+        today_three_boards_codes: list[str] = df_pool.loc[df_pool["consecutive_boards"] == 3, "code"].tolist() if not df_pool.empty else []
         if prev_date:
             conn = db_connect(DB_PATH, read_only=True)
             try:
@@ -1766,65 +1815,97 @@ def run_recap(date_str, trade_dates, observation_only=False):
             X_train, y_train, sector_encoding = get_training_features(DB_PATH, date_str)
             print(f"[ML Model] Training samples: {len(X_train)}")
             training_dates = X_train.attrs.get("training_dates", [])
-            training_sectors = X_train.attrs.get("training_sectors", [])
-            if len(training_dates) == len(X_train) and len(X_train) > 0:
-                model_run = evaluate_temporal_holdout(
-                    X_train,
-                    y_train,
-                    training_dates,
-                    sectors=training_sectors if len(training_sectors) == len(X_train) else None,
+            X_fit, y_fit, X_calib, y_calib = split_time_series_calibration(
+                X_train,
+                y_train,
+                training_dates,
+                min_calibration_samples=20,
+            )
+
+            if len(X_fit) > 0:
+                print(f"[ML Model] Fit samples: {len(X_fit)}")
+                base_model, calibrated_model, metrics = train_and_calibrate(
+                    X_fit,
+                    y_fit,
+                    X_calib,
+                    y_calib,
+                    random_seed=42,
+                    n_estimators=150,
+                    method="sigmoid",
+                    min_calibration_samples=20,
                 )
-                if model_run["status"] == "evaluated":
-                    print(
-                        "[ML Model] Temporal holdout "
-                        f"accuracy={model_run['accuracy']:.4f}, roc_auc={model_run['roc_auc']}"
-                    )
+                active_model = calibrated_model or base_model
 
-            if len(X_train) >= 30:
-                classes = np.unique(y_train)
-                if len(classes) >= 2:
-                    model = _new_promotion_model()
-                    model.fit(X_train, y_train)
-                    print("[ML Model] Trained successfully")
+                if X_calib is not None and y_calib is not None and len(X_calib) > 0:
+                    calib_proba = active_model.predict_proba(X_calib)
+                    positive = calib_proba[:, 1] if calib_proba.shape[1] > 1 else calib_proba[:, 0]
+                    accuracy = float(((positive >= 0.5).astype(int) == y_calib.to_numpy()).mean())
+                    roc_auc = float(roc_auc_score(y_calib, positive)) if y_calib.nunique() >= 2 else None
+                else:
+                    accuracy = None
+                    roc_auc = None
 
-                    importances = model.feature_importances_
-                    feature_names = X_train.columns
-                    importance_df = pd.DataFrame({"Feature": feature_names, "Importance": importances})
-                    importance_df = importance_df.sort_values(by="Importance", ascending=False)
+                model_run = {
+                    "model_version": MODEL_VERSION,
+                    "status": "calibrated" if metrics.calibrated else "trained",
+                    "train_start": training_dates[0] if training_dates else None,
+                    "train_end": training_dates[-1] if training_dates else None,
+                    "train_samples": len(X_fit),
+                    "holdout_start": training_dates[-len(X_calib)] if X_calib is not None and len(X_calib) > 0 else None,
+                    "holdout_end": training_dates[-1] if X_calib is not None and len(X_calib) > 0 else None,
+                    "holdout_samples": len(X_calib) if X_calib is not None else 0,
+                    "accuracy": accuracy,
+                    "roc_auc": roc_auc,
+                    "brier_score": metrics.brier_score,
+                    "log_loss": metrics.log_loss,
+                    "pr_auc": metrics.pr_auc,
+                    "n_calibration_samples": metrics.n_calibration_samples,
+                    "calibrated": metrics.calibrated,
+                }
+                print(
+                    "[ML Model] "
+                    f"calibrated={metrics.calibrated} "
+                    f"brier={metrics.brier_score} "
+                    f"log_loss={metrics.log_loss} "
+                    f"roc_auc={metrics.roc_auc} "
+                    f"pr_auc={metrics.pr_auc} "
+                    f"n_calibration={metrics.n_calibration_samples}"
+                )
+
+                if not X_train.empty:
+                    feature_importances = pd.Series(base_model.feature_importances_, index=X_train.columns)
                     print("Feature importances ranking:")
-                    for _, r in importance_df.iterrows():
-                        print(f"  {r['Feature']}: {r['Importance']:.4f}")
+                    for feature_name, importance in feature_importances.sort_values(ascending=False).items():
+                        print(f"  {feature_name}: {importance:.4f}")
 
                     df_pred = pd.DataFrame()
-                    df_pred["price"] = df_1b["最新价"].astype(float)
-                    df_pred["change_pct"] = df_1b["涨跌幅"].astype(float)
-                    df_pred["turnover"] = df_1b["换手率"].astype(float)
-                    raw_mcap = df_1b["流通市值"].astype(float)
-                    raw_seal = df_1b["封板资金"].astype(float)
+                    df_pred["price"] = df_1b["price"].astype(float)
+                    df_pred["change_pct"] = df_1b["change_pct"].astype(float)
+                    df_pred["turnover"] = df_1b["turnover_pct"].astype(float)
+                    raw_mcap = df_1b["float_mcap_yuan"].astype(float)
+                    raw_seal = df_1b["seal_funds_yuan"].astype(float)
                     df_pred["float_mcap"] = (raw_mcap / 1e9).round(2)
                     df_pred["seal_funds"] = (raw_seal / 1e6).round(2)
                     df_pred["seal_ratio"] = ((raw_seal / raw_mcap) * 100).where(raw_mcap > 0, 0.0).round(2)
-                    df_pred["first_seal_time"] = df_1b["首次封板时间"].astype(str).map(_normalize_time)
-                    df_pred["blown_count"] = df_1b["炸板次数"].astype(int)
-                    df_pred["score"] = df_1b["接力指数"].astype(int)
-                    df_pred["sector"] = df_1b["所属行业"]
-                    df_pred["sh_change"] = idx_recap.get("sh", {}).get("change", 0.0)
-                    df_pred["sz_change"] = idx_recap.get("sz", {}).get("change", 0.0)
-                    df_pred["cy_change"] = idx_recap.get("cy", {}).get("change", 0.0)
-                    df_pred["total_turnover"] = idx_recap.get("total_turnover", 0.0)
+                    df_pred["first_seal_time"] = df_1b["first_seal_time"].astype(str).map(_normalize_time)
+                    df_pred["blown_count"] = df_1b["blown_count"].astype(int)
+                    df_pred["score"] = df_1b["relay_score"].astype(int)
+                    df_pred["sector"] = df_1b["sector"]
+                    df_pred["sh_change"] = idx_recap.get("sh", {}).get("change")
+                    df_pred["sz_change"] = idx_recap.get("sz", {}).get("change")
+                    df_pred["cy_change"] = idx_recap.get("cy", {}).get("change")
+                    df_pred["total_turnover"] = idx_recap.get("total_turnover")
                     df_pred["limit_ups"] = total_lu
                     df_pred["limit_downs"] = limit_downs
                     df_pred["promotion_rate"] = promotion_rate
                     df_pred["sentiment"] = sentiment_label
 
                     X_pred = preprocess_features(df_pred, sector_encoding)
-                    probs = model.predict_proba(X_pred)[:, 1]
-                    pred_probs = [round(float(p), 4) for p in probs]
-                elif len(classes) == 1:
-                    print(f"[ML Model] Trained with single class: {classes[0]}")
-                    pred_probs = [float(classes[0])] * len(df_1b)
+                    probs = active_model.predict_proba(X_pred)
+                    positive = probs[:, 1] if probs.shape[1] > 1 else probs[:, 0]
+                    pred_probs = [round(float(p), 4) for p in positive]
             else:
-                print(f"[ML Model] Fallback to None predictions (samples {len(X_train)} < 30)")
+                print("[ML Model] Fallback to no predictions (empty training split)")
         except Exception as e:
             print(f"Error in ML Pipeline: {e}")
 
@@ -1844,75 +1925,60 @@ def run_recap(date_str, trade_dates, observation_only=False):
         finally:
             conn.close()
 
-        recent_sessions = int(cfg.raw["f19"]["recent_resonance_sessions"])
-        recent_dates = [d for d in trade_dates if d <= date_str][-recent_sessions:]
-        if date_str not in recent_dates:
-            recent_dates = (recent_dates + [date_str])[-recent_sessions:]
+        def _recent_trade_dates(window: int) -> list[str]:
+            recent = [d for d in trade_dates if d <= date_str][-window:]
+            if date_str not in recent:
+                recent = (recent + [date_str])[-window:]
+            return recent
 
-        recent_limit_ups_by_code: dict[str, list[str]] = {}
-        conn = db_connect(DB_PATH, read_only=True)
-        try:
-            if recent_dates:
+        def _load_recent_limit_ups_by_code(window: int) -> dict[str, list[str]]:
+            recent_dates = _recent_trade_dates(window)
+            recent_map: dict[str, list[str]] = {}
+            if not recent_dates:
+                return recent_map
+            conn = db_connect(DB_PATH, read_only=True)
+            try:
                 placeholders = ",".join("?" for _ in recent_dates)
                 for trade_day, code in conn.execute(
                     f"SELECT date, code FROM limit_ups_archive WHERE date IN ({placeholders})",
                     tuple(recent_dates),
                 ).fetchall():
-                    recent_limit_ups_by_code.setdefault(str(code).zfill(6), []).append(str(trade_day))
-        finally:
-            conn.close()
+                    recent_map.setdefault(str(code).zfill(6), []).append(str(trade_day))
+            finally:
+                conn.close()
+            return recent_map
 
-        lhb_stat_map: dict[str, dict[str, Any]] = {}
-        lhb_detail_map: dict[str, dict[str, Any]] = {}
-        try:
-            lhb_stat_df = ADAPTER.get_lhb_statistics()
-            if lhb_stat_df is not None and not lhb_stat_df.empty:
-                lhb_stat_df = lhb_stat_df.copy()
-                lhb_stat_df["代码"] = lhb_stat_df["代码"].astype(str).str.zfill(6)
-                lhb_stat_map = {row["代码"]: row for row in lhb_stat_df.to_dict("records")}
-        except Exception:
-            lhb_stat_map = {}
+        recent_3d_limit_ups_by_code = _load_recent_limit_ups_by_code(3)
+        recent_4d_limit_ups_by_code = _load_recent_limit_ups_by_code(4)
 
-        try:
-            end_date = date_str.replace("-", "")
-            start_date = (datetime.strptime(date_str, "%Y-%m-%d") - timedelta(days=30)).strftime("%Y%m%d")
-            lhb_detail_df = ADAPTER.get_lhb_details(start_date=start_date, end_date=end_date)
-            if lhb_detail_df is not None and not lhb_detail_df.empty:
-                lhb_detail_df = lhb_detail_df.copy()
-                lhb_detail_df["代码"] = lhb_detail_df["代码"].astype(str).str.zfill(6)
-                if "上榜日" in lhb_detail_df.columns:
-                    lhb_detail_df = lhb_detail_df.sort_values(["上榜日", "龙虎榜净买额"], ascending=[False, False])
-                for row in lhb_detail_df.to_dict("records"):
-                    lhb_detail_map.setdefault(row["代码"], row)
-        except Exception:
-            lhb_detail_map = {}
+        lhb_stat_map, lhb_detail_map = _load_lhb_maps(date_str)
 
         decisions = []
         extra_fields_by_code: dict[str, dict[str, Any]] = {}
         score_by_code: dict[str, int] = {}
         name_by_code: dict[str, str] = {}
-        current_rows = {str(row["代码"]).zfill(6): row for _, row in df_1b.iterrows()}
+        current_rows = {str(row["code"]).zfill(6): row for _, row in df_1b.iterrows()}
 
         for idx, row in df_1b.iterrows():
-            code = str(row["代码"]).zfill(6)
-            name = str(row["名称"])
-            first_seal_time = _normalize_time(row["首次封板时间"])
+            code = str(row["code"]).zfill(6)
+            name = str(row["name"])
+            first_seal_time = _normalize_time(row["first_seal_time"])
             record = {
                 "trade_date": date_str,
                 "code": code,
                 "name": name,
-                "price": float(row["最新价"]),
-                "change_pct": float(row["涨跌幅"]),
-                "turnover": float(row["换手率"]),
-                "float_mcap_yuan": float(row["流通市值"]),
-                "seal_funds_yuan": float(row["封板资金"]),
+                "price": float(row["price"]),
+                "change_pct": float(row["change_pct"]),
+                "turnover": float(row["turnover_pct"]),
+                "float_mcap_yuan": float(row["float_mcap_yuan"]),
+                "seal_funds_yuan": float(row["seal_funds_yuan"]),
                 "first_seal_time": first_seal_time,
-                "blown_count": int(row["炸板次数"]),
-                "consecutive_boards": int(row["连板数"]),
-                "sector": str(row["所属行业"]),
-                "concept": str(row.get("题材归因", "")),
-                "score": int(row["接力指数"]),
-                "is_st": "ST" in name or "退市" in name,
+                "blown_count": int(row["blown_count"]),
+                "consecutive_boards": int(row["consecutive_boards"]),
+                "sector": str(row["sector"]),
+                "concept": str(row.get("concept", "")),
+                "score": int(row["relay_score"]),
+                "is_st": bool(row["is_st"]) if "is_st" in row else ("ST" in name or "退市" in name),
             }
 
             lhb_status = "UNKNOWN"
@@ -1924,11 +1990,12 @@ def run_recap(date_str, trade_dates, observation_only=False):
             decision = evaluate_f19(
                 record,
                 cfg,
-                recent_limit_ups_by_code=recent_limit_ups_by_code,
+                recent_limit_ups_by_code=recent_3d_limit_ups_by_code,
                 lhb_status=lhb_status,
                 base_score=record["score"],
                 pred_prob=pred_probs[idx] if idx < len(pred_probs) else None,
             )
+            shadow_eligible = decision.eligible
 
             hist = history_df[history_df["code"] == code] if not history_df.empty else pd.DataFrame()
             total_limit_count = int(len(hist))
@@ -1943,16 +2010,15 @@ def run_recap(date_str, trade_dates, observation_only=False):
 
             lhb_stat = lhb_stat_map.get(code, {})
             lhb_detail = lhb_detail_map.get(code, {})
-            lhb_count = _safe_int(_pick(lhb_stat.get("上榜次数"), lhb_detail.get("上榜次数"), 0), 0)
+            lhb_count = _safe_int(_pick(lhb_stat.get("list_count"), lhb_detail.get("list_count"), 0), 0)
             net_buy_yuan = _safe_float(
                 _pick(
-                    lhb_stat.get("龙虎榜净买额"),
-                    lhb_detail.get("龙虎榜净买额"),
-                    lhb_detail.get("净买额"),
+                    lhb_stat.get("net_buy_yuan"),
+                    lhb_detail.get("net_buy_yuan"),
                     0.0,
                 )
             ) or 0.0
-            has_institution = bool(_safe_int(_pick(lhb_stat.get("买方机构次数"), lhb_detail.get("买方机构次数"), 0), 0))
+            has_institution = bool(_safe_int(_pick(lhb_stat.get("inst_buy_count"), lhb_detail.get("inst_buy_count"), 0), 0))
 
             activity = score_activity(total_limit_count)
             reliability = score_reliability(total_limit_count, blown_total)
@@ -1969,25 +2035,39 @@ def run_recap(date_str, trade_dates, observation_only=False):
                 sample_count=total_limit_count,
             )
             blocked_reason = personality_blocked_reason(personality_grade)
-            enforce_f17 = bool(cfg.raw.get("feature_flags", {}).get("enforce_f17", False))
+            enforce_f17 = bool(cfg.raw.get("feature_flags", {}).get("enforce_f17", False)) and bool(
+                cfg.raw.get("feature_flags", {}).get("personality_enforce", False)
+            )
             enforce_f18 = bool(cfg.raw.get("feature_flags", {}).get("enforce_f18", False))
-            can_trade = market_risk.f18_policy != PositionPolicy.HALT
-            adjusted_score = compute_adjusted_score(decision.base_score, market_risk.one_to_two_multiplier)
-
+            enforce_f19 = bool(cfg.raw.get("feature_flags", {}).get("enforce_f19", False))
+            use_adjusted_score = bool(cfg.raw.get("feature_flags", {}).get("use_adjusted_score", False))
+            can_trade = market_risk.f18_policy != PositionPolicy.HALT if enforce_f18 else True
+            has_recent_4d_2b = check_recent_4d_2b(code, recent_4d_limit_ups_by_code, int(cfg.raw["f14"]["min_limit_ups"]))
+            f14_boosted_score = apply_f14_boost(decision.base_score, has_recent_4d_2b, cfg)
+            adjusted_score = compute_adjusted_score(f14_boosted_score, market_risk.one_to_two_multiplier)
             reason_codes = list(decision.reason_codes)
-            eligible = decision.eligible
-            block_f17 = 0
-            if blocked_reason and enforce_f17:
+            if blocked_reason:
                 reason_codes.append(blocked_reason)
+
+            eligible = shadow_eligible if enforce_f19 else CandidateEligibility.ELIGIBLE
+            block_f17 = 1 if blocked_reason else 0
+            if blocked_reason and enforce_f17:
                 eligible = CandidateEligibility.INELIGIBLE
-                block_f17 = 1
+            if shadow_eligible != CandidateEligibility.ELIGIBLE and enforce_f19:
+                eligible = shadow_eligible
 
             signals = dict(decision.signals)
             signals.update(
                 {
+                    "rule_version": cfg.rule_version,
+                    "eligible": eligible.value,
+                    "shadow_eligible": shadow_eligible.value,
                     "market_regime": str(market_risk.market_regime),
                     "one_to_two_rate": market_risk.one_to_two_rate,
                     "two_to_three_rate": market_risk.two_to_three_rate,
+                    "f14_recent_4d_2b": has_recent_4d_2b,
+                    "f14_boosted_base_score": f14_boosted_score,
+                    "f14_score_multiplier": float(cfg.raw["f14"]["score_multiplier"]) if has_recent_4d_2b else 1.0,
                     "f18_policy": str(market_risk.f18_policy),
                     "f18_risk_budget": market_risk.f18_risk_budget,
                     "f18_low_sample": market_risk.f18_low_sample,
@@ -1998,8 +2078,10 @@ def run_recap(date_str, trade_dates, observation_only=False):
                     "can_trade": can_trade,
                     "block_f16": 0,
                     "block_f17": block_f17,
-                    "block_f18": 1 if enforce_f18 and market_risk.f18_policy == PositionPolicy.HALT else 0,
-                    "block_f19": 0 if decision.eligible == CandidateEligibility.ELIGIBLE else 1,
+                    "block_f18": 1 if market_risk.f18_policy == PositionPolicy.HALT else 0,
+                    "block_f19": 0 if shadow_eligible == CandidateEligibility.ELIGIBLE else 1,
+                    "use_adjusted_score": use_adjusted_score,
+                    "adjusted_score_shadow": adjusted_score if not use_adjusted_score else None,
                     "lhb_status": lhb_status,
                 }
             )
@@ -2017,37 +2099,34 @@ def run_recap(date_str, trade_dates, observation_only=False):
             score_by_code[code] = decision.base_score
             name_by_code[code] = name
             extra_fields_by_code[code] = {
-                "price": round(float(row["最新价"]), 2),
-                "change_pct": round(float(row["涨跌幅"]), 2),
-                "turnover": round(float(row["换手率"]), 2),
-                "float_mcap": round(float(row["流通市值"]) / 1e9, 2),
-                "seal_funds": round(float(row["封板资金"]) / 1e6, 2),
-                "seal_ratio": round((float(row["封板资金"]) / float(row["流通市值"]) * 100) if float(row["流通市值"]) > 0 else 0.0, 2),
+                "price": round(float(row["price"]), 2),
+                "change_pct": round(float(row["change_pct"]), 2),
+                "turnover": round(float(row["turnover_pct"]), 2),
+                "float_mcap": round(float(row["float_mcap_yuan"]) / 1e9, 2),
+                "seal_funds": round(float(row["seal_funds_yuan"]) / 1e6, 2),
+                "seal_ratio": round((float(row["seal_funds_yuan"]) / float(row["float_mcap_yuan"]) * 100) if float(row["float_mcap_yuan"]) > 0 else 0.0, 2),
                 "first_seal_time": first_seal_time,
-                "blown_count": int(row["炸板次数"]),
-                "sector": str(row["所属行业"]),
-                "concept": str(row.get("题材归因", "")),
-                "playbook": str(row["操作建议"]),
+                "blown_count": int(row["blown_count"]),
+                "sector": str(row["sector"]),
+                "concept": str(row.get("concept", "")),
+                "playbook": str(row["playbook"]),
                 "personality_grade": str(personality_grade),
-                "personality_dims": json.dumps(
-                    {
-                        "activity": activity,
-                        "explosiveness": explosiveness,
-                        "capital": capital,
-                        "early_board": early_board,
-                        "sample_count": total_limit_count,
-                        "lhb_count": lhb_count,
-                        "net_buy_yuan": net_buy_yuan,
-                    },
-                    ensure_ascii=False,
-                ),
+                "personality_dims": {
+                    "activity": activity,
+                    "explosiveness": explosiveness,
+                    "capital": capital,
+                    "early_board": early_board,
+                    "sample_count": total_limit_count,
+                    "lhb_count": lhb_count,
+                    "net_buy_yuan": net_buy_yuan,
+                },
                 "lhb_gold_net": net_buy_yuan if str(personality_grade) == "S" else None,
                 "lhb_death_net": net_buy_yuan if str(personality_grade) in {"C", "D"} else None,
                 "lhb_inst_net": net_buy_yuan if has_institution else None,
                 "block_f16": 0,
                 "block_f17": block_f17,
-                "block_f18": 1 if enforce_f18 and market_risk.f18_policy == PositionPolicy.HALT else 0,
-                "block_f19": 0 if decision.eligible == CandidateEligibility.ELIGIBLE else 1,
+                "block_f18": 1 if market_risk.f18_policy == PositionPolicy.HALT else 0,
+                "block_f19": 0 if shadow_eligible == CandidateEligibility.ELIGIBLE else 1,
             }
 
         ranked = rank_candidates(decisions, cfg)
@@ -2076,8 +2155,9 @@ def run_recap(date_str, trade_dates, observation_only=False):
             row = current_rows.get(d.code)
             if row is None:
                 continue
-            open_price = float(row["最新价"])
-            previous_close = open_price / (1 + float(row["涨跌幅"]) / 100) if float(row["涨跌幅"]) != -100 else None
+            open_price = float(row["price"])
+            previous_close = open_price / (1 + float(row["change_pct"]) / 100) if float(row["change_pct"]) != -100 else None
+            effective_f18_policy = market_risk.f18_policy if bool(cfg.raw.get("feature_flags", {}).get("enforce_f18", False)) else None
             buy = buy_plan(
                 date_str,
                 d.code,
@@ -2085,7 +2165,7 @@ def run_recap(date_str, trade_dates, observation_only=False):
                 previous_close=previous_close,
                 rule_version=cfg.rule_version,
                 market_regime=market_risk.market_regime,
-                f18_policy=market_risk.f18_policy,
+                f18_policy=effective_f18_policy,
             )
             if buy.action != ExecutionAction.NO_TRADE:
                 plans.append(buy)
@@ -2108,21 +2188,12 @@ def run_recap(date_str, trade_dates, observation_only=False):
                     rule_version=cfg.rule_version,
                 )
             )
-        persist_execution_plans(DB_PATH, plans)
+        if bool(cfg.raw.get("feature_flags", {}).get("publish_execution_plan", False)):
+            persist_execution_plans(DB_PATH, plans)
 
         print("Running UZI Jury Audit...")
         try:
-            cands_for_audit = []
-            for _, row in df_1b.sort_values(by="接力指数", ascending=False).head(5).iterrows():
-                cands_for_audit.append(
-                    {
-                        "code": row["代码"],
-                        "name": row["名称"],
-                        "first_seal_time": _normalize_time(row["首次封板时间"]),
-                        "turnover": float(row["换手率"]),
-                        "sector": row["所属行业"],
-                    }
-                )
+            cands_for_audit = _build_uzi_candidates(df_1b, ranked)
             conn = db_connect(DB_PATH)
             try:
                 run_real_uzi_audit(conn, date_str, cands_for_audit, uzi_path="")
