@@ -103,3 +103,56 @@ def test_intraday_execution_no_realtime(monkeypatch, mock_db_path: Path):
     assert result["snapshot_ts"] is None
     assert c1["score"] == 118
     assert c1["playbook"] == "测试playbook"
+
+
+def test_recap_all_returns_without_error(monkeypatch, tmp_path: Path):
+    db_path = tmp_path / "recap.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE candidates (
+            date TEXT, code TEXT, name TEXT, score INTEGER, price REAL,
+            first_seal_time TEXT, blown_count INTEGER, sector TEXT,
+            concept TEXT, playbook TEXT, seal_funds REAL,
+            turnover REAL, float_mcap REAL, personality_grade TEXT,
+            personality_dims TEXT, lhb_gold_net REAL, lhb_death_net REAL,
+            lhb_inst_net REAL, block_f16 INTEGER, block_f17 INTEGER,
+            block_f18 INTEGER, block_f19 INTEGER, pred_prob REAL,
+            PRIMARY KEY (date, code)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE market_recap (
+            date TEXT PRIMARY KEY, sentiment TEXT, sh_change REAL,
+            sz_change REAL, cy_change REAL, limit_ups INTEGER,
+            limit_downs INTEGER, total_turnover REAL, promotion_rate REAL,
+            limited_rebound_pct REAL, hgt_flow REAL, sgt_flow REAL,
+            sector_ranking TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE uzi_audit (
+            date TEXT, code TEXT, name TEXT, average_score REAL,
+            val_vote TEXT, mom_vote TEXT, risk_level TEXT,
+            summary TEXT, report_path TEXT, analysis_json TEXT
+        )
+    """)
+    conn.execute("""
+        INSERT INTO candidates (date, code, name, score, first_seal_time, sector, playbook)
+        VALUES ('2026-06-26', '000001', '平安银行', 118, '093500', '银行', '测试playbook')
+    """)
+    conn.execute("""
+        INSERT INTO market_recap (date, sentiment, limit_ups, limit_downs, sector_ranking)
+        VALUES ('2026-06-26', '一般', 50, 5, '[]')
+    """)
+    conn.execute("""
+        INSERT INTO uzi_audit (date, code, name, analysis_json)
+        VALUES ('2026-06-26', '000001', '平安银行', NULL)
+    """)
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr("app.api.recap.get_recap_db_path", lambda: db_path)
+    result = recap.get_all_recap_data()
+    assert "history" in result
+    assert "uzi_audit" in result
+    assert "calibration" in result
+    assert len(result["history"]) == 1

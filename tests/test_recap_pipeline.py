@@ -14,6 +14,12 @@ if str(SRC_DIR) not in sys.path:
 
 import recap_engine
 
+# Add backend API dir for _uzi_shared imports
+BACKEND_API_DIR = Path(__file__).resolve().parents[1] / "vendor" / "tickflow-stock-panel" / "backend" / "app" / "api"
+if str(BACKEND_API_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_API_DIR))
+from _uzi_shared import _fmt_num, _fmt_pct, _fmt_yi  # noqa: E402
+
 
 class TestRecapPipeline(unittest.TestCase):
     def setUp(self):
@@ -436,9 +442,9 @@ class TestRecapPipeline(unittest.TestCase):
         self.assertEqual(recap_engine._safe_int(None, default=9), 9)
         self.assertEqual(recap_engine._safe_float("1.23"), 1.23)
         self.assertEqual(recap_engine._safe_float(None), None)
-        self.assertEqual(recap_engine._fmt_num("1.234"), "1.23")
-        self.assertEqual(recap_engine._fmt_pct("0.123"), "0.1%")
-        self.assertEqual(recap_engine._fmt_yi("123000000"), "1.23亿")
+        self.assertEqual(_fmt_num("1.234"), "1.23")
+        self.assertEqual(_fmt_pct("0.123"), "0.1%")
+        self.assertEqual(_fmt_yi("123000000"), "1.23亿")
 
     def test_run_recap_offline_end_to_end(self):
         from contextlib import ExitStack

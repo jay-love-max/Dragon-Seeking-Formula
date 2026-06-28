@@ -15,6 +15,9 @@ from app.config import settings
 router = APIRouter(prefix="/api/recap", tags=["recap"])
 
 
+from app.api._uzi_shared import build_uzi_analysis_payload  # noqa: E402
+
+
 def get_recap_db_path() -> Path:
     # 1. Environment variable override
     env_path = os.getenv("RECAP_DB_PATH")
@@ -175,19 +178,22 @@ def get_intraday_execution():
         latest_date = candidate_rows[0]["date"]
         codes = [row["code"] for row in candidate_rows]
 
-        placeholders = ", ".join("?" for _ in codes)
-        cursor.execute(f"""
-            SELECT code, price, change_pct, score_intraday, seal_funds, ts
-            FROM realtime_snapshot
-            WHERE code IN ({placeholders})
-        """, codes)
-        rs_rows = cursor.fetchall()
-        rs_map = {row["code"]: dict(row) for row in rs_rows}
-
+        rs_map = {}
         snapshot_ts = None
-        for rs in rs_map.values():
-            if rs.get("ts"):
-                snapshot_ts = rs["ts"]
+        try:
+            placeholders = ", ".join("?" for _ in codes)
+            cursor.execute(f"""
+                SELECT code, price, change_pct, score_intraday, seal_funds, ts
+                FROM realtime_snapshot
+                WHERE code IN ({placeholders})
+            """, codes)
+            rs_rows = cursor.fetchall()
+            rs_map = {row["code"]: dict(row) for row in rs_rows}
+            for rs in rs_map.values():
+                if rs.get("ts"):
+                    snapshot_ts = rs["ts"]
+        except Exception:
+            pass
 
         candidates_list = []
         for row in candidate_rows:
@@ -385,7 +391,7 @@ def get_all_recap_data():
                 if recap:
                     candidate = next((item for item in recap.get("candidates", []) if item.get("code") == uzi_dict.get("code")), {})
                 uzi_dict["analysis_json"] = json.dumps(
-                    _build_uzi_analysis_payload(candidate, market=market),
+                    build_uzi_analysis_payload(candidate, market=market),
                     ensure_ascii=False,
                     separators=(",", ":"),
                 )
