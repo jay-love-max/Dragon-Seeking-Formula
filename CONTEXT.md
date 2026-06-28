@@ -34,6 +34,7 @@ _Avoid_: 开板次数、开板、分时烂板
 
 **封板强度 (Seal Strength)**:
 收盘时涨停板上的买单排队封板资金占个股流通市值的比率。
+在交易时段由实时管道记录的瞬时值为 **瞬时封板强度 (Instant Seal Strength)**，用于盘中接力指数预览，标注为非正式值。
 _Avoid_: 封单比率、排单占比
 
 **流通市值 (Float Market Cap)**:
@@ -50,7 +51,10 @@ _Avoid_: 封单比率、排单占比
 _Avoid_: 看多、看空、中立、看平、积极、消极
 
 **排雷评级 (Risk Ratings)**:
-大空头排雷席位对个股潜在财务风险的综合判定，仅允许输出 **“安全”**、**“危险”** 或 **“极度危险”** 三个值。
+大空头排雷席位对个股潜在财务风险的综合判定。当前实现按
+《2026-06-26-统一数据源与内置 UZI 大模型审计设计方案》采用
+三档枚举：**"安全"**、**"危险"**、**"极度危险"**。
+早期四档方案（含"关注"、"高危"）已弃用，仅作为历史设计参考。
 _Avoid_: 低风险、中风险、高风险、健康、违约
 
 ## 关系 (Relationships)
@@ -58,7 +62,12 @@ _Avoid_: 低风险、中风险、高风险、健康、违约
 * 一个 **巴菲特价值席位** 的 **席位表决意见** 依赖于标的股票的 **ROE** 和 **EPS**。
 * 一个 **赵老哥游资席位** 的 **席位表决意见** 依赖于标的股票的 **首次封板时间**、**炸板次数**、**封板强度** 和 **行业涨停数**。
 * 一个 **大空头排雷席位** 的 **排雷评级** 依赖于标的股票是否触及 **财务地雷 (Burry Traps)**。
-* 标的股票的 **接力指数 (Relay Score)** 是由 **首次封板时间**、**炸板次数**、**封板强度**、**流通市值**、**换手率** 与 **行业涨停数** 共同决定的得分。
+* 标的股票的 **接力指数 (Relay Score)** 是由 **首次封板时间**、**炸板次数**、**封板强度**、**流通市值**、**换手率** 与 **行业涨停数** 共同决定的得分。盘后 `run_recap()` 计算的为**正式接力指数**，覆盖当日盘中值。
+* 一个 **盘中接力指数 (Intraday Relay Score)** 在交易时段由实时数据管道基于瞬时快照轻量计算，标注为"盘中预览"（蓝色标记）。盘后被正式接力指数替换。
+
+## 盘中实时管道 (Intraday Pipeline)
+
+线上运行的 `src/data_pipeline/` 独立 asyncio 服务负责盘中数据采集、聚合与推送，具体见 `docs/superpowers/specs/2026-06-26-real-time-data-pipeline-design.md`。
 
 ## 示例对话 (Example Dialogue)
 
@@ -73,15 +82,50 @@ _Avoid_: 低风险、中风险、高风险、健康、违约
 
 **首次 clone 本仓库后必须执行：**
 
+> ⚠️ 首次 clone 本仓库后，必须先运行 `bash scripts/restore-vendor.sh` 恢复 `vendor/tickflow-stock-panel`，再执行 Docker 构建或 `scripts/dev.sh`。
+
 ```bash
 bash scripts/restore-vendor.sh    # 克隆并 checkout 到 vendor/VERSION 锁定的版本
 bash scripts/check-vendor.sh      # （可选）校验 vendor 是否在锁定版本
 ```
+
+### 升级 tickflow-stock-panel 版本流程
+
+1. 在本地开发环境中（仅一次）：
+   ```bash
+   cd vendor/tickflow-stock-panel
+   git fetch origin
+   git checkout <new-commit-or-tag>
+   ```
+
+2. 将新的 commit hash 写入 `vendor/VERSION`（仅一行 40 位 SHA）并提交：
+   ```bash
+   git -C vendor/tickflow-stock-panel rev-parse HEAD > vendor/VERSION
+   git commit -am "chore: bump tickflow-stock-panel to <sha>"
+   ```
+
+3. 其他开发者或 CI 通过：
+   ```bash
+   bash scripts/restore-vendor.sh
+   bash scripts/check-vendor.sh
+   ```
+   将本地 vendor 恢复到锁定版本。
 
 **每日运行复盘：**
 
 ```bash
 bash run_daily.sh                 # 等价于 python3 src/recap_engine.py [--date YYYY-MM-DD | --backfill N]
 ```
+
+**生产部署：**
+
+```bash
+docker compose up --build -d
+```
+
+Docker Compose 是唯一的生产拓扑：`pipeline` 负责盘中采集，`recap-scheduler`
+在工作日 15:10 运行盘后复盘，`tickflow` 提供面板。三者通过根目录
+`data/recap.db` 共享同一个 SQLite 数据库。`ecosystem.config.cjs` 仅作为本地
+PM2 备用入口，不再包含机器相关绝对路径。
 
 运行依赖声明见根目录 `pyproject.toml`（`pip install -e ".[dev]"` 安装运行与开发依赖），环境变量样例见 `.env.example`。
