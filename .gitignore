@@ -38,3 +38,8 @@ src/data_adapters/CLAUDE.md
 # Temporary commit diff backups and pre-migration database backups
 commit-*.diff
 data/*.bak
+
+# Tool-generated caches (Qoder, Superpowers, OMX)
+.qoder/
+.superpowers/
+.omx/
