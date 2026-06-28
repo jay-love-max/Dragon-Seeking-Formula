@@ -5,8 +5,8 @@
 
 echo "🔍 运行 pre-commit 检查..."
 
-# 检查是否有暂存的 Python 文件
-STAGED_PY=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$')
+# 检查是否有暂存的 Python 文件（排除 vendor/）
+STAGED_PY=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' | grep -v '^vendor/')
 
 if [ -z "$STAGED_PY" ]; then
     echo "✅ 无 Python 文件变更，跳过检查"

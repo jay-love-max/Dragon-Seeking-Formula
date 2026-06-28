@@ -148,6 +148,83 @@ def calculate_calibration_stats(conn: sqlite3.Connection) -> list[dict[str, Any]
 
 
 
+@router.get("/intraday-execution")
+def get_intraday_execution():
+    db_path = get_recap_db_path()
+    if not db_path.exists():
+        return {"date": None, "candidates": [], "snapshot_ts": None, "market_brief": None}
+
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT * FROM candidates
+            WHERE date = (SELECT max(date) FROM candidates)
+            ORDER BY score DESC
+            LIMIT 5
+        """)
+        candidate_cols = [desc[0] for desc in cursor.description] if cursor.description else []
+        candidate_rows = cursor.fetchall()
+
+        if not candidate_rows:
+            conn.close()
+            return {"date": None, "candidates": [], "snapshot_ts": None, "market_brief": None}
+
+        latest_date = candidate_rows[0]["date"]
+        codes = [row["code"] for row in candidate_rows]
+
+        placeholders = ", ".join("?" for _ in codes)
+        cursor.execute(f"""
+            SELECT code, price, change_pct, score_intraday, seal_funds, ts
+            FROM realtime_snapshot
+            WHERE code IN ({placeholders})
+        """, codes)
+        rs_rows = cursor.fetchall()
+        rs_map = {row["code"]: dict(row) for row in rs_rows}
+
+        snapshot_ts = None
+        for rs in rs_map.values():
+            if rs.get("ts"):
+                snapshot_ts = rs["ts"]
+
+        candidates_list = []
+        for row in candidate_rows:
+            c = dict(row)
+            code = c["code"]
+            rs = rs_map.get(code, {})
+            c["score_intraday"] = rs.get("score_intraday")
+            c["price"] = rs.get("price")
+            c["change_pct"] = rs.get("change_pct")
+            c["seal_funds"] = rs.get("seal_funds")
+            candidates_list.append(c)
+
+        try:
+            cursor.execute("""
+                SELECT
+                    SUM(CASE WHEN change_pct >= 9.8 THEN 1 ELSE 0 END) AS limit_up,
+                    SUM(CASE WHEN blown_count > 0 THEN 1 ELSE 0 END) AS broken,
+                    SUM(CASE WHEN change_pct <= -9.8 THEN 1 ELSE 0 END) AS limit_down
+                FROM realtime_snapshot
+            """)
+            brief_row = cursor.fetchone()
+            market_brief = dict(brief_row) if brief_row else None
+        except Exception:
+            market_brief = None
+
+        conn.close()
+
+        return {
+            "date": latest_date,
+            "candidates": candidates_list,
+            "snapshot_ts": snapshot_ts,
+            "market_brief": market_brief,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to query intraday execution data: {str(e)}")
+
+
 @router.post("/run")
 def trigger_recap_run():
     """Manually trigger the recap engine via run_daily.sh."""

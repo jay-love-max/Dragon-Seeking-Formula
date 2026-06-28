@@ -81,4 +81,5 @@ export const SSE_INVALIDATE_PREFIXES = [
   'overview-market',
   'limit-ladder',
   'screener-cached',
+  'recap-execution',
 ] as const

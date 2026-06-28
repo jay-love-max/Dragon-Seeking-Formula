@@ -714,10 +714,31 @@ export interface StrategyAlertEvent {
   signals?: string[]
 }
 
+export interface IntradayExecutionCandidate extends Omit<Candidate, 'price' | 'seal_funds'> {
+  score_intraday: number | null;
+  price: number | null;
+  change_pct: number | null;
+  seal_funds: number | null;
+}
+
+export interface MarketBrief {
+  limit_up: number | null;
+  broken: number | null;
+  limit_down: number | null;
+}
+
+export interface IntradayExecutionResponse {
+  date: string | null;
+  candidates: IntradayExecutionCandidate[];
+  snapshot_ts: string | null;
+  market_brief: MarketBrief | null;
+}
+
 // ===== API surface =====
 export const api = {
   health: () => request<{ status: string; version: string; mode: string }>('/health'),
   recapAll: () => request<RecapDataResponse>('/api/recap/all'),
+  intradayExecution: () => request<IntradayExecutionResponse>('/api/recap/intraday-execution'),
   recapRun: () => request<{ ok: boolean; returncode: number; stdout: string; stderr: string }>('/api/recap/run', { method: 'POST' }),
 
   settings: () => request<SettingsState>('/api/settings'),
