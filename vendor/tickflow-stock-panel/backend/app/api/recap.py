@@ -281,8 +281,14 @@ def get_all_recap_data():
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        # 1. Fetch last 150 market recaps
-        cursor.execute("SELECT * FROM market_recap ORDER BY date DESC LIMIT 150")
+        # 1. Fetch last 150 market recaps — only those with published candidates.
+        # 过滤掉"有 market_recap、无 candidates"的半写脏记录
+        # (非交易日 observation-only 回放残留),避免前端默认选中空白日期。
+        cursor.execute(
+            "SELECT m.* FROM market_recap m "
+            "WHERE EXISTS (SELECT 1 FROM candidates c WHERE c.date = m.date) "
+            "ORDER BY m.date DESC LIMIT 150"
+        )
         recap_rows = cursor.fetchall()
         recap_cols = [desc[0] for desc in cursor.description]
 

@@ -583,7 +583,7 @@ export function DragonSeekingRecap() {
         ))}
         <div className="rounded border p-5 flex flex-col justify-between" style={{ background: recapTheme.surface, borderColor: recapTheme.border }}>
           <div className="flex justify-between items-center text-xs uppercase" style={{ color: recapTheme.pageMuted }}><span>北向资金流向</span><span className="px-1 text-xs font-semibold" style={{ border: `1px solid ${recapTheme.border}`, background: recapTheme.accentSoft, color: recapTheme.accent }}>净买入</span></div>
-          <div className="mt-2 flex justify-between items-baseline"><span className="text-lg font-bold font-mono" style={{ color: recapTheme.pageText }}>{((currentRecap ? (currentRecap.market.hgt_flow + currentRecap.market.sgt_flow) : 0) >= 0 ? '+' : '')}{(currentRecap ? (currentRecap.market.hgt_flow + currentRecap.market.sgt_flow) : 0).toFixed(2)}亿</span><span className="text-xs font-mono" style={{ color: recapTheme.pageMuted }}>沪:{currentRecap?.market.hgt_flow.toFixed(1)} 深:{currentRecap?.market.sgt_flow.toFixed(1)}</span></div>
+          <div className="mt-2 flex justify-between items-baseline"><span className="text-lg font-bold font-mono" style={{ color: recapTheme.pageText }}>{((currentRecap ? ((currentRecap.market.hgt_flow ?? 0) + (currentRecap.market.sgt_flow ?? 0)) : 0) >= 0 ? '+' : '')}{(currentRecap ? ((currentRecap.market.hgt_flow ?? 0) + (currentRecap.market.sgt_flow ?? 0)) : 0).toFixed(2)}亿</span><span className="text-xs font-mono" style={{ color: recapTheme.pageMuted }}>沪:{(currentRecap?.market.hgt_flow ?? 0).toFixed(1)} 深:{(currentRecap?.market.sgt_flow ?? 0).toFixed(1)}</span></div>
         </div>
       </div>
 

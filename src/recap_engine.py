@@ -53,8 +53,10 @@ from stock_personality import (  # noqa: E402
     score_reliability,
 )
 from trading_calendar import (  # noqa: E402
+    SHANGHAI_TZ,
     assert_corroborates,
     calendar_metadata,
+    now_shanghai,
 )
 from trading_calendar import (
     is_trading_day as calendar_is_trading_day,
@@ -177,12 +179,21 @@ def resolve_recap_date(
     When no explicit date is provided, default to today's trading date. If
     today is a non-trading day and replay is not forced, fall back to the most
     recent trading day so the normal daily run stays on-market.
+
+    时间锚定 Asia/Shanghai:容器 TZ=UTC 时 naive datetime.now() 会把"今日"误判
+    成 UTC 日期(差 8 小时),导致非交易日误发布或漏发布。这里默认调用
+    now_shanghai(),并接受带 tzinfo 的 now 归一到上海日期;兜底(非交易日回退)
+    强制 observation_only=True,避免 INSERT OR REPLACE 覆盖已发布交易日数据
+    (AGENTS.md:非交易日必须 fail closed,数据缺失不得填成看似有效的 0 发布)。
     """
     if date_arg:
         return date_arg, force_non_trading_day, False
 
-    now = now or datetime.now()
-    today = now.strftime("%Y-%m-%d")
+    if now is None:
+        now = now_shanghai()
+    # naive datetime 视为上海本地时间(与 now_shanghai() 语义一致);
+    # aware datetime 归一到上海日期,避免跨时区漂移。
+    today = now.astimezone(SHANGHAI_TZ).strftime("%Y-%m-%d") if now.tzinfo else now.strftime("%Y-%m-%d")
     try:
         from trading_calendar import is_trading_day
 
@@ -193,8 +204,9 @@ def resolve_recap_date(
     if is_td or force_non_trading_day:
         return today, force_non_trading_day, False
 
+    # 非交易日兜底回退:强制 observation_only=True,只写观察样本不覆盖发布产物。
     prev = get_previous_trading_day(today, trade_dates)
-    return (prev or today), False, True
+    return (prev or today), True, True
 
 
 def _parse_time_to_seconds(time_str):
@@ -568,7 +580,7 @@ def persist_model_run(conn, date_str, metrics):
             int(metrics.get("holdout_samples", 0)),
             metrics.get("accuracy"),
             metrics.get("roc_auc"),
-            datetime.now().isoformat(timespec="seconds"),
+            now_shanghai().isoformat(timespec="seconds"),
         ),
     )
 
@@ -647,7 +659,7 @@ def fetch_ths_reasons(date_str):
 def fetch_northbound_flow(date_str=None):
     """Fetch northbound minute-by-minute flow using the current data adapter"""
     if date_str is None:
-        date_str = datetime.now().strftime('%Y-%m-%d')
+        date_str = now_shanghai().strftime('%Y-%m-%d')
     return ADAPTER.get_northbound_flow(date_str)
 
 def generate_playbook(row, sector_count, is_one_word):
@@ -1347,7 +1359,7 @@ def run_recap(date_str, trade_dates, observation_only=False):
             print("No previous trading day found. Promotion rate set to 0.0.")
 
         hgt_flow, sgt_flow = None, None
-        if date_str == datetime.now().strftime("%Y-%m-%d"):
+        if date_str == now_shanghai().strftime("%Y-%m-%d"):
             print("Fetching realtime northbound capital flow...")
             hgt_flow, sgt_flow = fetch_northbound_flow(date_str)
             print(f"Northbound Flow - HGT: {hgt_flow:.2f}亿, SGT: {sgt_flow:.2f}亿")
@@ -1382,8 +1394,14 @@ def run_recap(date_str, trade_dates, observation_only=False):
             "sector_ranking": sector_ranking_json,
         }
 
-        persist_limit_up_archive(DB_PATH, date_str, df_pool.to_dict("records") if not df_pool.empty else [])
-        persist_market_recap(DB_PATH, market_recap_row)
+        # 发布产物(market_recap / limit_ups_archive)只在可发布时写入;
+        # observation-only 回放时跳过,避免非交易日留下"有市场、无候选"
+        # 的半写脏记录(AGENTS.md:禁止把缺失数据填成看似有效的 0 后发布)。
+        # candidate_observations(全量首板观察样本)仍写入,供 ML 训练,
+        # 与 Top5 发布表分开保存(AGENTS.md 不可破坏约束)。
+        if not observation_only:
+            persist_limit_up_archive(DB_PATH, date_str, df_pool.to_dict("records") if not df_pool.empty else [])
+            persist_market_recap(DB_PATH, market_recap_row)
         for _, row in df_1b.iterrows() if not df_1b.empty else []:
             persist_observation(
                 DB_PATH,
@@ -1780,8 +1798,6 @@ def run_recap(date_str, trade_dates, observation_only=False):
             finally:
                 conn.close()
 
-        persist_market_risk(DB_PATH, market_risk)
-
         plans = []
         for d in ranked:
             if d.publication_status != PublicationStatus.PUBLISHED_TOP5:
@@ -1941,7 +1957,7 @@ def main():
         if not trade_dates:
             print("[backfill] ERROR: trade_dates 为空(mootdx 不可用),无法执行回填。")
             return
-        latest_day = datetime.now().strftime('%Y-%m-%d')
+        latest_day = now_shanghai().strftime('%Y-%m-%d')
         valid_dates = [d for d in trade_dates if d <= latest_day]
         backfill_dates = valid_dates[-n_days:]
         if not backfill_dates:
@@ -1960,7 +1976,7 @@ def main():
 
 
     else:
-        now = datetime.now()
+        now = now_shanghai()
         date_str, observation_only, defaulted_from_non_trading = resolve_recap_date(
             args.date,
             trade_dates,
@@ -1970,7 +1986,9 @@ def main():
 
         if defaulted_from_non_trading:
             print(
-                f"[gate] {now.strftime('%Y-%m-%d')} 非交易日,默认回退到最近交易日 {date_str}。"
+                f"[gate] {now.strftime('%Y-%m-%d')} 非交易日,默认回退到最近交易日 {date_str}"
+                " 并以 observation-only 模式运行(不覆盖已发布数据)。"
+                "如需补发布请显式指定 --date。"
             )
 
         # 交易日闸门:显式指定的非交易日默认拒绝发布(方案 8.3)。
