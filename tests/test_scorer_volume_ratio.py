@@ -1,7 +1,7 @@
 """Tests for volume ratio scoring dimension (E05)."""
 from __future__ import annotations
 
-from scorer import _volume_position_bonus, _volume_ratio_points
+from scorer import _volume_position_bonus, _volume_ratio_points, compute_relay_score
 
 
 class TestVolumeRatioPoints:
@@ -133,3 +133,50 @@ class TestVolumePositionBonus:
     def test_negative_volume_returns_0(self):
         """vr 为负数降级为0。"""
         assert _volume_position_bonus(-1.0, 0.5) == 0
+
+
+def _base_row(**overrides):
+    """构造一个基础候选 row,默认全中性值,可覆盖。"""
+    row = {
+        "first_seal_time": "093500",
+        "blown_count": 0,
+        "float_mcap": 5e9,  # 50亿
+        "seal_funds": 1e8,   # 1亿
+        "turnover": 8.0,     # 8%
+    }
+    row.update(overrides)
+    return row
+
+
+class TestComputeRelayScoreWithVolume:
+    def test_volume_ratio_mid_band_increases_score(self):
+        """中档量比(显著+中位联调)也提升分数,验证非核弹路径。
+        volume_ratio=2.5(显著+5), price_position=0.5(中位+3) → +8。
+        """
+        base = compute_relay_score(_base_row(), 3)
+        mid_band = compute_relay_score(_base_row(volume_ratio=2.5, price_position=0.5), 3)
+        assert mid_band > base
+        assert mid_band - base == 8
+
+    def test_missing_volume_ratio_degrades_to_base(self):
+        """volume_ratio 缺失时退化为原6维(等于不传该字段)。"""
+        no_vol = compute_relay_score(_base_row(), 3)
+        none_vol = compute_relay_score(_base_row(volume_ratio=None, price_position=None), 3)
+        assert no_vol == none_vol
+
+    def test_nuke_low_position_max_bonus(self):
+        """量比≥3 + 低位放量 = 核弹+10 + 联调+5 = +15。"""
+        base = compute_relay_score(_base_row(), 3)
+        nuke = compute_relay_score(_base_row(volume_ratio=3.5, price_position=0.2), 3)
+        assert nuke - base == 15
+
+    def test_high_position_heavy_volume_penalizes(self):
+        """高位爆量 = 核弹+10 + 联调-5 = +5(比中性少)。"""
+        base = compute_relay_score(_base_row(), 3)
+        high_blow = compute_relay_score(_base_row(volume_ratio=3.5, price_position=0.8), 3)
+        assert high_blow - base == 5
+
+    def test_score_stays_within_0_150(self):
+        """量比不突破 0-150 边界。"""
+        high = compute_relay_score(_base_row(volume_ratio=10.0, price_position=0.1), 6)
+        assert 0 <= high <= 150

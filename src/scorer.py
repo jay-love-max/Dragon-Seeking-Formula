@@ -183,6 +183,7 @@ def _noise_caps(
     size_points: int,
     turnover_points: int,
     sector_points: int,
+    volume_points: int,
 ) -> int:
     supportive_factors = sum(
         p >= 10
@@ -193,6 +194,7 @@ def _noise_caps(
             size_points,
             turnover_points,
             sector_points,
+            volume_points,
         )
     )
 
@@ -223,6 +225,8 @@ def compute_relay_score(row: dict, sector_limit_ups: int) -> int:
     seal_funds = _safe_float(row.get("seal_funds"), 0.0)
     turnover = _safe_float(row.get("turnover"), 0.0)
     sector_limit_ups = _safe_int(sector_limit_ups, 0)
+    volume_ratio = row.get("volume_ratio")  # None if absent
+    price_position = row.get("price_position")
 
     timing_points = _time_points(time_str)
     stability_points = _stability_points(blown)
@@ -230,6 +234,9 @@ def compute_relay_score(row: dict, sector_limit_ups: int) -> int:
     size_points = _size_points(float_mcap)
     turnover_points = _turnover_points(turnover, is_one_word)
     sector_points = _sector_points(sector_limit_ups)
+    volume_points = _volume_ratio_points(volume_ratio) + _volume_position_bonus(
+        volume_ratio, price_position
+    )
 
     score = 50 + (
         timing_points
@@ -238,6 +245,7 @@ def compute_relay_score(row: dict, sector_limit_ups: int) -> int:
         + size_points
         + turnover_points
         + sector_points
+        + volume_points
     )
 
     score = _noise_caps(
@@ -253,6 +261,7 @@ def compute_relay_score(row: dict, sector_limit_ups: int) -> int:
         size_points=size_points,
         turnover_points=turnover_points,
         sector_points=sector_points,
+        volume_points=volume_points,
     )
 
     return max(0, min(150, score))
