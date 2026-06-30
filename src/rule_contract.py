@@ -124,6 +124,10 @@ class ReasonCode(StrEnum):
     # 弱封单惩罚(可选)
     WEAK_SEAL_50_TO_100M = "WEAK_SEAL_50_TO_100M"
 
+    # 量比维度(E05)
+    VOLUME_RATIO_MISSING = "VOLUME_RATIO_MISSING"
+    VOLUME_RATIO_NUKE = "VOLUME_RATIO_NUKE"
+
     # 发布结果
     PUBLISHED_TOP5 = "PUBLISHED_TOP5"
     RANKED_OUTSIDE_TOP5 = "RANKED_OUTSIDE_TOP5"
@@ -171,6 +175,7 @@ def _validate(config: dict[str, Any]) -> None:
         "use_adjusted_score",
         "publish_execution_plan",
         "personality_enforce",
+        "enforce_volume_ratio",
     ):
         _check(isinstance(feature_flags.get(key), bool), f"feature_flags.{key} must be bool")
 
@@ -250,6 +255,21 @@ def _validate(config: dict[str, Any]) -> None:
         >= 0.0,
         "personality grade thresholds must be monotonic non-increasing",
     )
+
+    vr = config["volume_ratio"]
+    _check(float(vr["nuke_threshold"]) > 0, "volume_ratio.nuke_threshold must be > 0")
+    _check(
+        float(vr["significant_threshold"]) <= float(vr["nuke_threshold"]),
+        "volume_ratio significant_threshold must be <= nuke_threshold",
+    )
+    _check(
+        float(vr["shrink_threshold"]) < float(vr["significant_threshold"]),
+        "volume_ratio shrink_threshold must be < significant_threshold",
+    )
+    _check(int(vr["position_lookback"]) >= 1, "volume_ratio.position_lookback must be >= 1")
+    _check(int(vr["volume_ma_window"]) >= 1, "volume_ratio.volume_ma_window must be >= 1")
+
+
 def _resolve_config_path(explicit: Path | str | None, *candidates: Path) -> Path:
     if explicit is not None:
         return Path(explicit)

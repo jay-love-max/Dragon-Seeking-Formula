@@ -112,6 +112,12 @@ class TestConfigValidation:
         cfg["f19"]["min_seal_funds_yuan"] = -1
         self._expect_invalid(tmp_path, cfg)
 
+    def test_volume_ratio_thresholds_non_monotonic_rejected(self, tmp_path):
+        """volume_ratio significant_threshold > nuke_threshold 必须拒绝(fail closed)。"""
+        cfg = copy.deepcopy(load_rule_config().raw)
+        cfg["volume_ratio"]["significant_threshold"] = 4.0  # > nuke=3.0
+        self._expect_invalid(tmp_path, cfg)
+
     def _expect_invalid(self, tmp_path: Path, cfg: dict) -> None:
         p = tmp_path / "bad.toml"
         import tomli_w
@@ -212,3 +218,37 @@ class TestEnums:
             "REDUCE",
             "EXIT",
         }
+
+
+def test_volume_ratio_missing_reason_code_exists():
+    """VOLUME_RATIO_MISSING 原因码已定义。"""
+    from rule_contract import ReasonCode
+    assert ReasonCode.VOLUME_RATIO_MISSING.value == "VOLUME_RATIO_MISSING"
+
+
+def test_volume_ratio_nuke_reason_code_exists():
+    """VOLUME_RATIO_NUKE 原因码已定义。"""
+    from rule_contract import ReasonCode
+    assert ReasonCode.VOLUME_RATIO_NUKE.value == "VOLUME_RATIO_NUKE"
+
+
+def test_enforce_volume_ratio_flag_validates():
+    """feature_flags.enforce_volume_ratio 必须是 bool。"""
+    from rule_contract import load_rule_config
+    cfg = load_rule_config()
+    assert isinstance(cfg.raw["feature_flags"]["enforce_volume_ratio"], bool)
+
+
+def test_volume_ratio_config_section_exists():
+    """[volume_ratio] 配置段存在且阈值有效。"""
+    from rule_contract import load_rule_config
+    cfg = load_rule_config()
+    vr = cfg.raw["volume_ratio"]
+    assert float(vr["nuke_threshold"]) == 3.0
+    assert int(vr["nuke_points"]) == 10
+    assert float(vr["significant_threshold"]) == 2.0
+    assert int(vr["significant_points"]) == 5
+    assert float(vr["shrink_threshold"]) == 0.8
+    assert int(vr["shrink_points"]) == -3
+    assert int(vr["position_lookback"]) >= 1
+    assert int(vr["volume_ma_window"]) >= 1

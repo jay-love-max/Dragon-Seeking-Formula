@@ -16,6 +16,7 @@ enforce_f18 = false        # Phase 3:F18 市场级总闸
 use_adjusted_score = false # Phase 5/7:回测达标前用 base_score 排序
 publish_execution_plan = false # Phase 6:结构化执行计划
 personality_enforce = false   # Phase 4:股性 enforce 阶段
+enforce_volume_ratio = false  # Phase X:量比维度(默认关闭,回测达标后开启)
 
 [f19]
 # 第二层基础硬门槛
@@ -110,3 +111,14 @@ require_index_majority = true   # 三大指数不可全部不可用
 require_rule_config_valid = true
 require_migration_ok = true
 require_no_default_zero = true
+
+[volume_ratio]
+# E05 量比维度:今日成交量 / 前 volume_ma_window 日平均成交量
+nuke_threshold = 3.0          # ≥3 核弹级
+nuke_points = 10
+significant_threshold = 2.0   # 2-3 显著放量
+significant_points = 5
+shrink_threshold = 0.8        # <0.8 缩量
+shrink_points = -3
+position_lookback = 20       # 价格位置回看窗口(近20日高低)
+volume_ma_window = 5         # 量比均量窗口(前5日)
