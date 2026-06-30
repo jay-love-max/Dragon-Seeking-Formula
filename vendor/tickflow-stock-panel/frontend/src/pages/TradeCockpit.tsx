@@ -136,7 +136,7 @@ function ExecutionCard({ candidate, rank, active, onClick }: {
                 'text-sm font-bold tabular-nums font-mono',
                 priceColorClass(candidate.change_pct!),
               )}>
-                {fmtPct(candidate.change_pct!)}
+                {fmtPct(candidate.change_pct! / 100)}
               </div>
             )}
           </div>
@@ -200,7 +200,7 @@ function IntradayDetail({ candidate }: { candidate: IntradayExecutionCandidate }
             'text-base font-bold tabular-nums font-mono',
             candidate.change_pct != null ? priceColorClass(candidate.change_pct) : 'text-muted/50',
           )}>
-            {candidate.change_pct != null ? fmtPct(candidate.change_pct) : '—'}
+            {candidate.change_pct != null ? fmtPct(candidate.change_pct / 100) : '—'}
           </div>
         </div>
       </div>
