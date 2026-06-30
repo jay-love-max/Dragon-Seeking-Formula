@@ -177,7 +177,7 @@ export function CandidateDeepCard({ candidate: c, rank }: CandidateDeepCardProps
               </div>
               <div className="flex items-center gap-1.5 text-[10px] text-muted">
                 <span>{c.sector}</span>
-                {c.float_mcap != null && <span>· {fmtBigNum(c.float_mcap)}</span>}
+                {c.float_mcap != null && <span>· {c.float_mcap.toFixed(1)}亿</span>}
               </div>
             </div>
           </div>

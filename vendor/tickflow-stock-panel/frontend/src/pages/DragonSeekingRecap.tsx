@@ -252,7 +252,7 @@ export function DragonSeekingRecap() {
     let list = currentRecap.candidates
     if (searchQuery) {
       const q = searchQuery.toLowerCase().trim()
-      list = list.filter(c => c.name.toLowerCase().includes(q) || c.code.includes(q) || c.sector.toLowerCase().includes(q) || (c.concept && c.concept.toLowerCase().includes(q)))
+      list = list.filter(c => c.name.toLowerCase().includes(q) || c.code.includes(q) || (c.sector ?? '').toLowerCase().includes(q) || (c.concept && c.concept.toLowerCase().includes(q)))
     }
     if (scoreFilter === 'high') list = list.filter(c => c.score >= 100)
     else if (scoreFilter === 'mid') list = list.filter(c => c.score >= 80 && c.score < 100)
@@ -307,7 +307,7 @@ export function DragonSeekingRecap() {
   const isVolMet = (c: Candidate) => {
     const item = liveData[c.code]
     if (!item) return false
-    const targetVol = c.float_mcap * c.turnover * 10
+    const targetVol = (c.float_mcap ?? 0) * (c.turnover ?? 0) * 10
     return item.turnover >= targetVol
   }
 
@@ -327,7 +327,7 @@ export function DragonSeekingRecap() {
     else setSimOpenType('low')
     const c = topCandidates.find(item => item.code === simStockCode)
     if (c) {
-      const targetVol = c.float_mcap * c.turnover * 10
+      const targetVol = (c.float_mcap ?? 0) * (c.turnover ?? 0) * 10
       setSimVolType(quote.turnover >= targetVol ? 'met' : 'not_met')
     }
   }
@@ -370,10 +370,10 @@ export function DragonSeekingRecap() {
     if (simStockCode && liveData[simStockCode]) fillSimulatorFromLive(liveData)
   }, [simStockCode, liveData])
 
-  const getValuationPrice = (code: string, buyPrice: number) => {
+  const getValuationPrice = (code: string, buyPrice: number): number => {
     if (!currentRecap) return buyPrice
     const c = currentRecap.candidates.find(item => item.code === code)
-    return c ? c.price : buyPrice
+    return c ? (c.price ?? buyPrice) : buyPrice
   }
 
   const getFloatingPnl = (holding: PortfolioItem) => {
@@ -414,7 +414,7 @@ export function DragonSeekingRecap() {
     }
     const totalCost = shares * price
     setCash(prev => prev - totalCost)
-    setPortfolio(prev => [...prev, { code: stock.code, name: stock.name, buy_date: selectedDate, buy_price: price, shares, sector: stock.sector }])
+    setPortfolio(prev => [...prev, { code: stock.code, name: stock.name, buy_date: selectedDate, buy_price: price, shares, sector: stock.sector ?? '' }])
     toast(`以 ${price.toFixed(2)}元 买入 ${stock.name} ${shares}股`, 'success')
   }
 
@@ -552,7 +552,7 @@ export function DragonSeekingRecap() {
           <div className="border-t pt-3 mt-3" style={{ borderColor: recapTheme.border }}>
             <span className="text-xs font-semibold block mb-2" style={{ color: recapTheme.pageMuted }}>量化胜率校验 / 历史晋级率回测</span>
             <div className="space-y-1.5 text-xs font-mono">
-              {calibrationData.map(cal => <div key={cal.score_range} className="flex justify-between items-center"><span className="text-gray-500">{cal.bucket_name.split(' ')[0]} ({cal.score_range}分)</span><span className={`font-bold ${cal.win_rate >= 15 ? 'text-danger' : 'text-gray-400'}`}>{cal.win_rate.toFixed(2)}% <span className="text-gray-500 font-normal">({cal.promoted_count}/{cal.total_count})</span></span></div>)}
+              {calibrationData.map(cal => <div key={cal.score_range} className="flex justify-between items-center"><span className="text-gray-500">{cal.bucket_name.split(' ')[0]} ({cal.score_range}分)</span><span className={`font-bold ${(cal.win_rate ?? 0) >= 15 ? 'text-danger' : 'text-gray-400'}`}>{(cal.win_rate ?? 0).toFixed(2)}% <span className="text-gray-500 font-normal">({cal.promoted_count}/{cal.total_count})</span></span></div>)}
             </div>
           </div>
         </div>
@@ -564,8 +564,8 @@ export function DragonSeekingRecap() {
           </div>
           <div className="h-[210px] w-full relative"><div ref={trendChartRef} className="h-full w-full" /></div>
           <div className="grid grid-cols-2 gap-4 border-t pt-3 text-xs font-mono" style={{ borderColor: recapTheme.border }}>
-            <div className="flex justify-between"><span style={{ color: recapTheme.pageMuted }}>今日1进2晋级率</span><span className="text-danger font-bold">{currentRecap?.market.promotion_rate.toFixed(2)}%</span></div>
-            <div className="flex justify-between"><span style={{ color: recapTheme.pageMuted }}>两市总成交额</span><span style={{ color: recapTheme.pageText }} className="font-bold">{currentRecap?.market.total_turnover.toFixed(1)} 亿</span></div>
+            <div className="flex justify-between"><span style={{ color: recapTheme.pageMuted }}>今日1进2晋级率</span><span className="text-danger font-bold">{(currentRecap?.market.promotion_rate ?? 0).toFixed(2)}%</span></div>
+            <div className="flex justify-between"><span style={{ color: recapTheme.pageMuted }}>两市总成交额</span><span style={{ color: recapTheme.pageText }} className="font-bold">{(currentRecap?.market.total_turnover ?? 0).toFixed(1)} 亿</span></div>
           </div>
         </div>
       </div>
@@ -605,14 +605,14 @@ export function DragonSeekingRecap() {
                     <div className="flex flex-wrap justify-end gap-2">
                       <span className="text-xs text-yellow-500 font-bold border border-yellow-500/15 px-2 py-0.5 bg-yellow-500/5 font-mono">接力指数 {c.score}</span>
                       {c.pred_prob !== null && c.pred_prob !== undefined && <span className="text-xs text-danger font-bold border border-danger/15 px-2 py-0.5 bg-danger/5 font-mono">预估晋级率 {(c.pred_prob * 100).toFixed(1)}%</span>}
-                      <button onClick={() => buyStock(c, c.price)} className="bg-danger/20 border border-danger/50 text-danger hover:bg-danger hover:text-white px-2 py-0.5 text-xs font-semibold rounded select-none transition-all active:scale-[0.96]">模拟买入</button>
+                      <button onClick={() => buyStock(c, c.price ?? 0)} className="bg-danger/20 border border-danger/50 text-danger hover:bg-danger hover:text-white px-2 py-0.5 text-xs font-semibold rounded select-none transition-all active:scale-[0.96]">模拟买入</button>
                     </div>
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mt-1 text-xs font-mono">
                     <div className="bg-[#08090a]/50 border border-border/50 p-2 rounded"><div className="text-gray-500">首次封板时间</div><div className="text-white font-medium mt-0.5">{c.first_seal_time_formatted}</div></div>
-                    <div className="bg-[#08090a]/50 border border-border/50 p-2 rounded"><div className="text-gray-500">日内炸板次数</div><div className={`text-white font-medium mt-0.5 ${c.blown_count >= 2 ? 'text-warning font-semibold' : ''}`}>{c.blown_count}</div></div>
-                    <div className="bg-[#08090a]/50 border border-border/50 p-2 rounded"><div className="text-gray-500">日内换手率</div><div className="text-white font-medium mt-0.5">{c.turnover.toFixed(2)}%</div></div>
-                    <div className="bg-[#08090a]/50 border border-border/50 p-2 rounded"><div className="text-gray-500">流通市值</div><div className="text-white font-medium mt-0.5">{c.float_mcap.toFixed(2)} 亿</div></div>
+                    <div className="bg-[#08090a]/50 border border-border/50 p-2 rounded"><div className="text-gray-500">日内炸板次数</div><div className={`text-white font-medium mt-0.5 ${(c.blown_count ?? 0) >= 2 ? 'text-warning font-semibold' : ''}`}>{c.blown_count ?? 0}</div></div>
+                    <div className="bg-[#08090a]/50 border border-border/50 p-2 rounded"><div className="text-gray-500">日内换手率</div><div className="text-white font-medium mt-0.5">{(c.turnover ?? 0).toFixed(2)}%</div></div>
+                    <div className="bg-[#08090a]/50 border border-border/50 p-2 rounded"><div className="text-gray-500">流通市值</div><div className="text-white font-medium mt-0.5">{(c.float_mcap ?? 0).toFixed(2)} 亿</div></div>
                   </div>
                   <div className="text-xs mt-1 font-semibold uppercase tracking-wide" style={{ color: recapTheme.pageMuted }}>所属行业: <span className="text-gray-300 normal-case">{c.sector}</span></div>
                 </div>
@@ -642,9 +642,9 @@ export function DragonSeekingRecap() {
                 <div key={c.code + '-target'} onClick={() => setSimStockCode(c.code)} role="button" tabIndex={0} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') setSimStockCode(c.code) }} className={`border p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 cursor-pointer transition-all duration-200 select-none rounded focus:outline-none ${simStockCode === c.code ? 'border-danger bg-danger/5' : 'border-border bg-[#0e1013]/60 hover:border-danger/30'}`}>
                   <div className="w-full sm:w-1/4"><h4 className="text-sm font-extrabold text-white flex items-center gap-1.5"><span className={`w-1.5 h-1.5 rounded-full ${simStockCode === c.code ? 'bg-danger animate-pulse' : 'bg-gray-600'}`} />{c.name}</h4><p className="text-xs text-gray-500 font-mono mt-0.5">{c.code} · {c.sector}</p></div>
                   <div className="w-full sm:w-1/2 grid grid-cols-3 gap-2 text-xs font-mono">
-                    <div><div className="text-gray-500">昨日收盘</div><div className="text-danger font-bold mt-0.5">{c.price.toFixed(2)}元</div></div>
-                    <div><div className="text-gray-500">理想开盘 (2%~5%)</div><div className="text-warning font-bold mt-0.5">{(c.price * 1.02).toFixed(2)} ~ {(c.price * 1.05).toFixed(2)}元</div>{liveData[c.code] && <div className="mt-1 pt-1 border-t border-border/40"><span className="text-gray-600">实际开盘: </span><span className={`font-bold ${liveData[c.code].change >= 0 ? 'text-danger' : 'text-success'}`}>{liveData[c.code].change >= 0 ? '+' : ''}{liveData[c.code].change.toFixed(2)}%</span></div>}</div>
-                    <div><div className="text-gray-500">目标竞价额 (10%昨成交)</div><div className="text-red-400 font-bold mt-0.5">&gt;{(c.float_mcap * c.turnover * 10).toFixed(0)}万</div>{liveData[c.code] && <div className="mt-1 pt-1 border-t border-border/40"><span className="text-gray-600">实际竞价: </span><span className={`font-bold ${isVolMet(c) ? 'text-danger' : 'text-gray-400'}`}>{liveData[c.code].turnover.toFixed(0)}万</span></div>}</div>
+                    <div><div className="text-gray-500">昨日收盘</div><div className="text-danger font-bold mt-0.5">{(c.price ?? 0).toFixed(2)}元</div></div>
+                    <div><div className="text-gray-500">理想开盘 (2%~5%)</div><div className="text-warning font-bold mt-0.5">{((c.price ?? 0) * 1.02).toFixed(2)} ~ {((c.price ?? 0) * 1.05).toFixed(2)}元</div>{liveData[c.code] && <div className="mt-1 pt-1 border-t border-border/40"><span className="text-gray-600">实际开盘: </span><span className={`font-bold ${liveData[c.code].change >= 0 ? 'text-danger' : 'text-success'}`}>{liveData[c.code].change >= 0 ? '+' : ''}{liveData[c.code].change.toFixed(2)}%</span></div>}</div>
+                    <div><div className="text-gray-500">目标竞价额 (10%昨成交)</div><div className="text-red-400 font-bold mt-0.5">&gt;{((c.float_mcap ?? 0) * (c.turnover ?? 0) * 10).toFixed(0)}万</div>{liveData[c.code] && <div className="mt-1 pt-1 border-t border-border/40"><span className="text-gray-600">实际竞价: </span><span className={`font-bold ${isVolMet(c) ? 'text-danger' : 'text-gray-400'}`}>{liveData[c.code].turnover.toFixed(0)}万</span></div>}</div>
                   </div>
                   <div className="w-full sm:w-1/4 text-right text-xs text-gray-400 leading-normal flex flex-col items-end gap-1"><span className="font-semibold">{c.score >= 115 ? '高溢价高要求，爆量高开为强' : '弱转强首选，高开回踩支撑进场'}</span>{liveData[c.code] && <div className="mt-2">{isSignalMet(c) ? <span className="bg-danger/10 text-danger border border-danger/55 px-2 py-0.5 font-bold rounded animate-pulse">🚀 竞价强承接 (达标)</span> : <span className="bg-elevated text-gray-500 border border-border px-2 py-0.5 rounded font-medium">未达标</span>}</div>}</div>
                 </div>
@@ -677,7 +677,7 @@ export function DragonSeekingRecap() {
           {currentUziAudit.map(u => (
             <div key={u.code} className="bg-[#0b0d12]/50 p-4 border border-border rounded flex flex-col justify-between gap-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
               <div>
-                <div className="flex justify-between items-start border-b border-border/40 pb-3"><div><h4 className="text-sm font-semibold text-white">{u.name}</h4><p className="text-xs text-gray-500 font-mono mt-0.5">{u.code} · <span className="normal-case text-gray-400">{u.sector}</span></p></div><div className="inline-flex items-center justify-center px-2 py-0.5 border border-border bg-[#11131c]/50 text-danger text-lg font-extrabold rounded">{u.average_score.toFixed(1)}<span className="text-xs ml-0.5">分</span></div></div>
+                <div className="flex justify-between items-start border-b border-border/40 pb-3"><div><h4 className="text-sm font-semibold text-white">{u.name}</h4><p className="text-xs text-gray-500 font-mono mt-0.5">{u.code} · <span className="normal-case text-gray-400">{u.sector}</span></p></div>                <div className="inline-flex items-center justify-center px-2 py-0.5 border border-border bg-[#11131c]/50 text-danger text-lg font-extrabold rounded">{(u.average_score ?? 0).toFixed(1)}<span className="text-xs ml-0.5">分</span></div></div>
                 <div className="mt-3 space-y-2 text-xs"><div className="flex justify-between items-center"><span className="text-gray-500">巴菲特 (价值流派)</span><span className={`font-bold ${u.val_vote === '多头' ? 'text-danger' : u.val_vote === '空头' ? 'text-success' : 'text-gray-500'}`}>{u.val_vote}</span></div><div className="flex justify-between items-center"><span className="text-gray-500">赵老哥 (游资接力)</span><span className={`font-bold ${u.mom_vote === '多头' ? 'text-danger' : u.mom_vote === '空头' ? 'text-success' : 'text-gray-500'}`}>{u.mom_vote}</span></div><div className="flex justify-between items-center border-t border-border/40 pt-2 mt-2"><span className="text-gray-500">大空头 (排雷评级)</span><span className={`font-bold ${u.risk_level === '安全' ? 'text-success' : 'text-danger'}`}>{u.risk_level}</span></div></div>
               </div>
               <div className="text-xs text-gray-300 bg-[#0e1117]/80 p-3.5 border border-border rounded leading-6 font-mono max-h-[140px] overflow-y-auto">{u.summary}</div>
@@ -721,7 +721,7 @@ export function DragonSeekingRecap() {
           <div className="overflow-x-auto max-h-[350px] pr-1">
             <table className="w-full text-left text-xs border-collapse">
               <thead><tr className="border-b border-border/40 text-gray-500 font-bold uppercase tracking-wider bg-[#08090a]/50"><th className="py-2.5 px-3">代码</th><th className="py-2.5 px-3">简称</th><th className="py-2.5 px-3 text-right">最新价</th><th className="py-2.5 px-3 text-right">换手</th><th className="py-2.5 px-3 text-right">首次封板</th><th className="py-2.5 px-3 text-center">炸板</th><th className="py-2.5 px-3 text-right">封单资金</th><th className="py-2.5 px-3 text-right">封单比</th><th className="py-2.5 px-3 text-right">流通市值</th><th className="py-2.5 px-3">所属行业</th><th className="py-2.5 px-3">题材归因</th><th className="py-2.5 px-3 text-center">接力指数</th></tr></thead>
-              <tbody>{filteredCandidates.map(c => <tr key={c.code} className="border-b border-border/20 hover:bg-elevated/20 transition-colors"><td className="py-2 px-3 font-mono text-gray-400">{c.code}</td><td className="py-2 px-3"><div className="flex items-center justify-between gap-2"><span className="font-bold text-white">{c.name}</span><button onClick={() => buyStock(c, c.price)} className="bg-danger/10 border border-danger/40 text-danger hover:bg-danger hover:text-white px-1.5 py-0.5 text-xs font-semibold rounded select-none transition-all active:scale-[0.95]">买入</button></div></td><td className="py-2 px-3 text-right font-mono text-danger font-semibold">{c.price.toFixed(2)}</td><td className="py-2 px-3 text-right font-mono">{c.turnover.toFixed(2)}%</td><td className="py-2 px-3 text-right font-mono">{c.first_seal_time_formatted}</td><td className={`py-2 px-3 text-center font-mono ${c.blown_count >= 2 ? 'text-warning font-bold' : 'text-gray-500'}`}>{c.blown_count}</td><td className="py-2 px-3 text-right font-mono text-warning">{c.seal_funds.toFixed(1)}万</td><td className={`py-2 px-3 text-right font-mono ${(c.seal_ratio ?? 0) >= 3.0 ? 'text-red-400 font-semibold' : 'text-gray-500'}`}>{(c.seal_ratio ?? 0).toFixed(2)}%</td><td className="py-2 px-3 text-right font-mono">{c.float_mcap.toFixed(1)}亿</td><td className="py-2 px-3 text-gray-300">{c.sector}</td><td className="py-2 px-3 text-gray-500 max-w-[120px] truncate" title={c.concept ?? '暂无归因'}>{c.concept ?? '暂无归因'}</td><td className="py-2 px-3 text-center"><span className={`font-mono px-2 py-0.5 text-xs font-bold border rounded ${getScoreClass(c.score)}`}>{c.score}</span></td></tr>)}</tbody>
+              <tbody>{filteredCandidates.map(c => <tr key={c.code} className="border-b border-border/20 hover:bg-elevated/20 transition-colors"><td className="py-2 px-3 font-mono text-gray-400">{c.code}</td><td className="py-2 px-3"><div className="flex items-center justify-between gap-2"><span className="font-bold text-white">{c.name}</span><button onClick={() => buyStock(c, c.price ?? 0)} className="bg-danger/10 border border-danger/40 text-danger hover:bg-danger hover:text-white px-1.5 py-0.5 text-xs font-semibold rounded select-none transition-all active:scale-[0.95]">买入</button></div></td><td className="py-2 px-3 text-right font-mono text-danger font-semibold">{(c.price ?? 0).toFixed(2)}</td><td className="py-2 px-3 text-right font-mono">{(c.turnover ?? 0).toFixed(2)}%</td><td className="py-2 px-3 text-right font-mono">{c.first_seal_time_formatted}</td><td className={`py-2 px-3 text-center font-mono ${(c.blown_count ?? 0) >= 2 ? 'text-warning font-bold' : 'text-gray-500'}`}>{c.blown_count ?? 0}</td><td className="py-2 px-3 text-right font-mono text-warning">{(c.seal_funds ?? 0).toFixed(1)}万</td><td className={`py-2 px-3 text-right font-mono ${(c.seal_ratio ?? 0) >= 3.0 ? 'text-red-400 font-semibold' : 'text-gray-500'}`}>{(c.seal_ratio ?? 0).toFixed(2)}%</td><td className="py-2 px-3 text-right font-mono">{(c.float_mcap ?? 0).toFixed(1)}亿</td><td className="py-2 px-3 text-gray-300">{c.sector}</td><td className="py-2 px-3 text-gray-500 max-w-[120px] truncate" title={c.concept ?? '暂无归因'}>{c.concept ?? '暂无归因'}</td><td className="py-2 px-3 text-center"><span className={`font-mono px-2 py-0.5 text-xs font-bold border rounded ${getScoreClass(c.score)}`}>{c.score}</span></td></tr>)}</tbody>
             </table>
           </div>
         </div>

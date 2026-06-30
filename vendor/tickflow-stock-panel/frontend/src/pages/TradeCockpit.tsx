@@ -89,7 +89,7 @@ function ExecutionCard({ candidate, rank, active, onClick }: {
 }) {
   const hasRealtime = candidate.change_pct != null
   const isLimitUp = candidate.change_pct != null && candidate.change_pct >= 9.8
-  const isBroken = candidate.blown_count > 0
+  const isBroken = (candidate.blown_count ?? 0) > 0
 
   return (
     <div

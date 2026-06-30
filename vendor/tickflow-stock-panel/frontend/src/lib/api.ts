@@ -607,19 +607,19 @@ export interface Preferences {
 
 export interface MarketRecap {
   date: string
-  sentiment: string
-  limit_ups: number
-  limit_downs: number
-  sh_price: number
-  sh_change: number
-  sz_price: number
-  sz_change: number
-  cy_price: number
-  cy_change: number
-  hgt_flow: number
-  sgt_flow: number
-  promotion_rate: number
-  total_turnover: number
+  sentiment: string | null
+  limit_ups: number | null
+  limit_downs: number | null
+  sh_price: number | null
+  sh_change: number | null
+  sz_price: number | null
+  sz_change: number | null
+  cy_price: number | null
+  cy_change: number | null
+  hgt_flow: number | null
+  sgt_flow: number | null
+  promotion_rate: number | null
+  total_turnover: number | null
   sector_ranking: Array<{ name: string; leader: string; count: number }>
   market_regime: string | null
   f18_rate: number | null
@@ -643,17 +643,19 @@ export interface Candidate {
   name: string
   score: number
   pred_prob: number | null
-  price: number
-  first_seal_time: string
+  price: number | null
+  first_seal_time: string | null
   first_seal_time_formatted: string
-  blown_count: number
-  turnover: number
-  float_mcap: number
-  sector: string
+  blown_count: number | null
+  turnover: number | null
+  float_mcap: number | null
+  sector: string | null
   concept: string | null
-  playbook: string
-  seal_funds: number
-  seal_ratio: number
+  playbook: string | null
+  seal_funds: number | null
+  seal_ratio: number | null
+  change_pct: number | null
+  consecutive_boards: number | null
   personality_grade: string | null
   personality_dims: Record<string, number> | null
   lhb_gold_net: number | null
@@ -685,7 +687,7 @@ export interface UziAuditRecord {
   date: string
   code: string
   name: string
-  average_score: number
+  average_score: number | null
   val_vote: string
   mom_vote: string
   risk_level: string

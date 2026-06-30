@@ -149,17 +149,17 @@ function CalibrationBuckets({ buckets }: { buckets: { bucket_name: string; score
           <div className="mt-1 flex items-center justify-between text-[10px]">
             <span className="text-muted">{b.promoted_count}/{b.total_count}</span>
             <span className="font-mono font-bold tabular-nums" style={{
-              color: b.win_rate >= 0.5 ? '#F04438' : b.win_rate >= 0.3 ? '#EAB308' : '#6B7280',
+              color: (b.win_rate ?? 0) >= 50 ? '#F04438' : (b.win_rate ?? 0) >= 30 ? '#EAB308' : '#6B7280',
             }}>
-              {(b.win_rate * 100).toFixed(0)}%
+              {(b.win_rate ?? 0).toFixed(1)}%
             </span>
           </div>
           <div className="mt-1 h-1 rounded-full bg-elevated overflow-hidden">
             <div
               className="h-full rounded-full transition-all"
               style={{
-                width: `${Math.min(100, Math.max(0, b.win_rate * 100))}%`,
-                backgroundColor: b.win_rate >= 0.5 ? '#F04438' : b.win_rate >= 0.3 ? '#EAB308' : '#6B7280',
+                width: `${Math.min(100, Math.max(0, b.win_rate))}%`,
+                backgroundColor: b.win_rate >= 50 ? '#F04438' : b.win_rate >= 30 ? '#EAB308' : '#6B7280',
               }} />
           </div>
         </div>
@@ -236,7 +236,7 @@ export function RecapReview() {
               <span className="text-[11px] text-muted">北向</span>
               <div className="text-right">
                 <div className="text-xs font-mono tabular-nums text-foreground">
-                  {latest?.market?.hgt_flow != null ? `${(latest.market.hgt_flow / 1e8).toFixed(1)}亿` : '—'}
+                  {latest?.market?.hgt_flow != null ? `${(latest.market.hgt_flow).toFixed(1)}亿` : '—'}
                 </div>
               </div>
             </div>
@@ -307,23 +307,23 @@ export function RecapReview() {
                   {data.uzi_audit.map((a) => (
                     <tr key={`${a.date}_${a.code}`} className="border-b border-border/10">
                       <td className="py-1.5 pr-2 font-medium">{a.name} <span className="font-mono text-muted text-[9px]">{a.code}</span></td>
-                      <td className="py-1.5 pr-2 font-mono tabular-nums">{a.average_score.toFixed(1)}</td>
+                      <td className="py-1.5 pr-2 font-mono tabular-nums">{(a.average_score ?? 0).toFixed(1)}</td>
                       <td className="py-1.5 pr-2">
                         <span className={cn(
                           'text-[10px] font-medium',
-                          a.val_vote === 'positive' ? 'text-bull' : a.val_vote === 'negative' ? 'text-bear' : 'text-muted',
+                          a.val_vote === '多头' ? 'text-bull' : a.val_vote === '空头' ? 'text-bear' : 'text-muted',
                         )}>{a.val_vote}</span>
                       </td>
                       <td className="py-1.5 pr-2">
                         <span className={cn(
                           'text-[10px] font-medium',
-                          a.mom_vote === 'positive' ? 'text-bull' : a.mom_vote === 'negative' ? 'text-bear' : 'text-muted',
+                          a.mom_vote === '多头' ? 'text-bull' : a.mom_vote === '空头' ? 'text-bear' : 'text-muted',
                         )}>{a.mom_vote}</span>
                       </td>
                       <td className="py-1.5 pr-2">
                         <span className={cn(
                           'text-[10px] font-medium',
-                          a.risk_level === 'high' ? 'text-danger' : a.risk_level === 'medium' ? 'text-warning' : 'text-bull',
+                          a.risk_level === '安全' ? 'text-bull' : 'text-danger',
                         )}>{a.risk_level}</span>
                       </td>
                       <td className="py-1.5 text-muted/70 text-[10px] line-clamp-2">{a.summary}</td>

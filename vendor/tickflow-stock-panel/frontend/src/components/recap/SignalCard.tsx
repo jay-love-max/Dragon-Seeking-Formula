@@ -189,7 +189,7 @@ export function SignalCard({ candidate: c, rank, active = false, onClick }: Sign
                 <GradeBadge grade={c.personality_grade} />
                 {c.float_mcap != null && (
                   <span className="text-[10px] text-muted tabular-nums">
-                    {fmtBigNum(c.float_mcap)}
+                    {c.float_mcap.toFixed(1)}亿
                   </span>
                 )}
               </div>
@@ -199,7 +199,7 @@ export function SignalCard({ candidate: c, rank, active = false, onClick }: Sign
             <div className="space-y-1.5">
               <ScoreBar score={c.score} />
               <ProbBar prob={c.pred_prob} label="晋级概率" />
-              {c.blown_count > 0 && (
+              {(c.blown_count ?? 0) > 0 && (
                 <div className="text-[10px] text-warning/80 tabular-nums">
                   炸板 {c.blown_count} 次
                 </div>
@@ -207,9 +207,9 @@ export function SignalCard({ candidate: c, rank, active = false, onClick }: Sign
             </div>
 
             <div className="space-y-1.5">
-              <SealBar ratio={c.seal_ratio} turnover={c.turnover} />
+              <SealBar ratio={c.seal_ratio ?? 0} turnover={c.turnover ?? 0} />
               <div className="text-[10px] text-muted tabular-nums">
-                封单 {fmtBigNum(c.seal_funds)}
+                封单 {c.seal_funds != null ? `${c.seal_funds.toFixed(0)}万` : '—'}
               </div>
             </div>
           </div>
