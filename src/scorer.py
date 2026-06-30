@@ -122,6 +122,28 @@ def _sector_points(sector_limit_ups: int) -> int:
     return 0
 
 
+def _volume_ratio_points(volume_ratio: float | None) -> int:
+    """E05: 量比基础分。量比≥3核弹+10,2-3显著+5,0.8-2中性0,<0.8缩量-3。
+
+    数据缺失(None/NaN/≤0)返回0(降级不加分)。
+    """
+    if volume_ratio is None:
+        return 0
+    try:
+        vr = float(volume_ratio)
+    except (TypeError, ValueError):
+        return 0
+    if vr != vr or vr <= 0:  # NaN or non-positive
+        return 0
+    if vr >= 3.0:
+        return 10
+    if vr >= 2.0:
+        return 5
+    if vr >= 0.8:
+        return 0
+    return -3
+
+
 def _noise_caps(
     score: int,
     time_str: str,
