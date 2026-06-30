@@ -144,6 +144,32 @@ def _volume_ratio_points(volume_ratio: float | None) -> int:
     return -3
 
 
+def _volume_position_bonus(volume_ratio: float | None, price_position: float | None) -> int:
+    """位置×量价联调加分。知识库乘性矩阵翻译为加减分。
+
+    低位放量(吸筹)+5 / 高位爆量(派发)-5 / 高位缩量(健康)+3 等。
+    数据缺失返回0(降级)。
+    """
+    if volume_ratio is None or price_position is None:
+        return 0
+    try:
+        vr = float(volume_ratio)
+        pos = float(price_position)
+    except (TypeError, ValueError):
+        return 0
+    if vr != vr or pos != pos or vr <= 0:  # NaN or non-positive
+        return 0
+    if pos < 0.0 or pos > 1.0:  # out-of-range position degrades (fail-closed)
+        return 0
+    heavy = vr >= 2.0
+    light = vr < 0.8
+    if pos < 0.33:
+        return 5 if heavy else (-2 if light else 2)
+    if pos > 0.66:
+        return -5 if heavy else (3 if light else -2)
+    return 3 if heavy else (-3 if light else 0)
+
+
 def _noise_caps(
     score: int,
     time_str: str,
