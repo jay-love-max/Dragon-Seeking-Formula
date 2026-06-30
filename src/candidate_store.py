@@ -232,13 +232,13 @@ def persist_decisions_and_top5(
 
             float_mcap_yuan = _first_not_none(signals.get("float_mcap_yuan"), extra.get("float_mcap_yuan"))
             seal_funds_yuan = _first_not_none(signals.get("seal_funds_yuan"), extra.get("seal_funds_yuan"))
-            float_mcap_billion = (
-                round(float(float_mcap_yuan) / 1e9, 2)
+            float_mcap_yi = (
+                round(float(float_mcap_yuan) / 1e8, 2)
                 if float_mcap_yuan is not None
                 else extra.get("float_mcap")
             )
-            seal_funds_million = (
-                round(float(seal_funds_yuan) / 1e6, 2)
+            seal_funds_wan = (
+                round(float(seal_funds_yuan) / 1e4, 2)
                 if seal_funds_yuan is not None
                 else extra.get("seal_funds")
             )
@@ -268,8 +268,8 @@ def persist_decisions_and_top5(
                     extra.get("price"),
                     extra.get("change_pct"),
                     extra.get("turnover"),
-                    float_mcap_billion,
-                    seal_funds_million,
+                    float_mcap_yi,
+                    seal_funds_wan,
                     extra.get("seal_ratio"),
                     signals.get("first_seal_time"),
                     signals.get("blown_count"),

@@ -316,11 +316,11 @@ def get_all_recap_data():
                         c_dict["personality_dims"] = json.loads(dims)
                     except Exception:
                         c_dict["personality_dims"] = None
-                t = c_dict["first_seal_time"]
-                if len(t) == 6:
+                t = c_dict.get("first_seal_time")
+                if t and len(t) == 6:
                     c_dict["first_seal_time_formatted"] = f"{t[:2]}:{t[2:4]}:{t[4:]}"
                 else:
-                    c_dict["first_seal_time_formatted"] = t
+                    c_dict["first_seal_time_formatted"] = t or ""
                 # 补充 execution_plans(条件买入 + 防守计划)
                 # 尝试表存在时才查,否则崩溃(方案 11.2/14.2 表由 migration 003 创建)
                 c_dict["buy_plan"] = None
@@ -347,7 +347,7 @@ def get_all_recap_data():
             # 补充 market_risk 字段(one_to_two_*→f18_* 是 DB→API 命名转换)
             try:
                 cursor.execute(
-                    "SELECT market_regime, one_to_two_numerator, one_to_two_denominator, one_to_two_rate, f18_policy, f18_risk_budget "
+                    "SELECT market_regime, one_to_two_numerator, one_to_two_denominator, one_to_two_rate, f18_policy, f18_risk_budget, f18_low_sample "
                     "FROM market_risk WHERE trade_date = ?",
                     (date_str,)
                 )
@@ -359,6 +359,7 @@ def get_all_recap_data():
                     recap_dict["f18_rate"] = risk_row[3]
                     recap_dict["f18_policy"] = risk_row[4]
                     recap_dict["f18_risk_budget"] = risk_row[5]
+                    recap_dict["f18_low_sample"] = bool(risk_row[6]) if risk_row[6] is not None else None
                 else:
                     raise Exception("no row")
             except Exception:
@@ -368,6 +369,7 @@ def get_all_recap_data():
                 recap_dict["f18_rate"] = None
                 recap_dict["f18_policy"] = None
                 recap_dict["f18_risk_budget"] = None
+                recap_dict["f18_low_sample"] = None
 
             recap_data = {
                 "date": date_str,

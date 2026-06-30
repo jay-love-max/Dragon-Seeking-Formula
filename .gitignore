@@ -50,6 +50,10 @@ src/data_adapters/CLAUDE.md
 commit-*.diff
 data/*.bak
 
+# Runtime data: cron/复盘运行产物日志(如 daily_recap.log)。
+# 注:data/recap.db 已入库追踪,gitignore 对已追踪文件无效;长期移除追踪为独立后续任务。
+data/*.log
+
 # Tool-generated caches (Qoder, Superpowers, OMX)
 .qoder/
 .superpowers/
