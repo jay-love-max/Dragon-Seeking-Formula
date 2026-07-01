@@ -21,6 +21,33 @@ try:  # Python 3.11+ stdlib;pyproject 要求 >=3.11
 except ModuleNotFoundError:  # pragma: no cover - 仅为防御,生产用 3.11
     import tomli as tomllib  # type: ignore[no-redef]
 
+class FactorId(StrEnum):
+    """因子枚举(因子库.md 2026-07-01)。对应 F 系列进化规则。"""
+    ICE_AGE_COEFFICIENT = "F01"
+    ICE_AGE_20CM_PENALTY = "F02"
+    FIRST_BOARD_BOOST = "F03"
+    SECOND_BOARD_PENALTY = "F04"
+    FBAO_PENALTY = "F05"
+    C_GRADE_COEFFICIENT = "F06"
+    FIRST_SEAL_AUCTION_BONUS = "F07"
+    SEAL_FUND_WEAK_PENALTY = "F08"
+    SEAL_FUND_WEAK_THRESHOLD = "F09"
+    VOLUME_FIRST_BOARD_BOOST = "F13"
+    VOLUME_FIRST_BOARD_SHRINK = "F14"
+    VOLUME_CONTINUATION_SHRINK = "F15"
+    VOLUME_CONTINUATION_EXPLODE = "F16"
+    LOW_POSITION_VOLUME_BONUS = "F17"
+
+
+class ConditionOrderId(StrEnum):
+    """条件单因子(C 系列)。"""
+    OPEN_BUY_OFFSET = "C01"
+    GAP_SELL_OFFSET = "C02"
+    TAKE_PROFIT_4PCT = "C03_4"
+    TAKE_PROFIT_7PCT = "C03_7"
+    COMPLETENESS_CHECK = "C04"
+
+
 RULE_VERSION = "dragon-formula/1.0.0-draft"
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "rules" / "dragon_formula_v1.toml"
 LHB_SEATS_PATH = Path(__file__).resolve().parents[1] / "config" / "lhb_seats_v1.toml"
@@ -176,8 +203,18 @@ def _validate(config: dict[str, Any]) -> None:
         "publish_execution_plan",
         "personality_enforce",
         "enforce_volume_ratio",
+        "enforce_multiplicative_factors",
     ):
         _check(isinstance(feature_flags.get(key), bool), f"feature_flags.{key} must be bool")
+
+    ranking_mode = feature_flags.get("ranking_mode", "additive")
+    _check(ranking_mode in ("additive", "weighted"), "feature_flags.ranking_mode must be additive or weighted")
+
+    if ranking_mode == "weighted":
+        rw = config.get("ranking_weights", {})
+        _check(rw, "ranking_weights must exist when ranking_mode=weighted")
+        total = sum(float(rw[k]) for k in ("bid_stability", "personality_grade", "sector_heat", "seal_funds"))
+        _check(abs(total - 1.0) < 0.001, f"ranking_weights must sum to 1.0, got {total}")
 
     f19 = config["f19"]
     _check(float(f19["min_seal_funds_yuan"]) >= 0, "f19.min_seal_funds_yuan must be >= 0")

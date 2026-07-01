@@ -17,6 +17,8 @@ use_adjusted_score = false # Phase 5/7:回测达标前用 base_score 排序
 publish_execution_plan = false # Phase 6:结构化执行计划
 personality_enforce = false   # Phase 4:股性 enforce 阶段
 enforce_volume_ratio = false  # Phase X:量比维度(默认关闭,回测达标后开启)
+enforce_multiplicative_factors = false  # F02-F05 乘性因子(回测达标后开启)
+ranking_mode = "additive"     # additive|weighted(F27)
 
 [f19]
 # 第二层基础硬门槛
@@ -62,6 +64,33 @@ one_to_two_multiplier_frozen = 0.6
 one_to_two_multiplier_suppressed = 0.8
 one_to_two_multiplier_active = 1.0
 one_to_two_multiplier_main_up = 1.1
+
+# 市场环境动态调参(2026-07-01): 连板高度→各策略系数
+# 知识库 市场环境动态调参.md
+[strategy_coefficients]
+frozen_first_board = 1.0
+frozen_one_to_two = 0.6
+frozen_relay = 0.3
+frozen_reversal = 0.5
+frozen_half_road = 0.7
+
+suppressed_first_board = 1.1
+suppressed_one_to_two = 0.8
+suppressed_relay = 0.6
+suppressed_reversal = 0.8
+suppressed_half_road = 0.9
+
+active_first_board = 1.0
+active_one_to_two = 1.0
+active_relay = 0.9
+active_reversal = 0.8
+active_half_road = 1.0
+
+main_up_first_board = 0.9
+main_up_one_to_two = 1.1
+main_up_relay = 1.1
+main_up_reversal = 1.0
+main_up_half_road = 0.8
 
 [limit_rule]
 # 涨停幅度归一化;ST 先被 F19 排除,5cm 仅用于历史样本

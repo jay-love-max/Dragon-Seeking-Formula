@@ -9,13 +9,17 @@
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
+from data_adapters.base_adapter import can_fetch_longhubang
 from execution_policy import (
     auction_matrix,
     buy_plan,
     defensive_sell_plan,
     round_to_tick,
+    second_board_auction_matrix,
 )
 from rule_contract import ExecutionAction, MarketRegime, PositionPolicy
 
@@ -140,6 +144,56 @@ class TestAuctionMatrix:
 
     def test_missing_price_returns_no_trade(self):
         plan = auction_matrix(TD, CODE, open_price=None, previous_close=None, rule_version=RV)
+        assert plan.action == ExecutionAction.NO_TRADE
+        assert plan.precondition == "missing_price"
+
+
+class TestCanFetchLongHuBang:
+    """F24: 龙虎榜采集时间约束。"""
+
+    def test_before_20_returns_false(self):
+        before = datetime(2026, 7, 1, 19, 59)
+        assert not can_fetch_longhubang(before)
+
+    def test_at_20_returns_true(self):
+        at = datetime(2026, 7, 1, 20, 0)
+        assert can_fetch_longhubang(at)
+
+    def test_after_20_returns_true(self):
+        after = datetime(2026, 7, 1, 20, 30)
+        assert can_fetch_longhubang(after)
+
+
+class TestSecondBoardAuctionMatrix:
+    """二板→三板竞价矩阵(不同于首板→次日)。"""
+
+    @pytest.mark.parametrize("open_px,prev_close,expected_action,expected_precondition", [
+        (10.8,  10.0, ExecutionAction.HOLD, "hold_full_position"),
+        (10.5,  10.0, ExecutionAction.REDUCE, "reduce_half_rest_hold"),
+        (10.3,  10.0, ExecutionAction.REDUCE, "reduce_and_watch_30s"),
+        (10.0,  10.0, ExecutionAction.WATCH, "require_red_within_30s"),
+        (9.8,   10.0, ExecutionAction.EXIT, "exit_at_auction"),
+        (9.2,   10.0, ExecutionAction.EXIT, "exit_at_auction"),
+    ])
+    def test_boundaries(self, open_px, prev_close, expected_action, expected_precondition):
+        plan = second_board_auction_matrix(TD, CODE, open_price=open_px, previous_close=prev_close, rule_version=RV)
+        assert plan.action == expected_action, f"open_px={open_px} expected {expected_action} got {plan.action}"
+        assert expected_precondition in (plan.precondition or "")
+
+    def test_ge_8pct_is_hold_not_reduce(self):
+        """二板≥+8%:持有格局(首板→次日是减半仓)。"""
+        first_plan = auction_matrix(TD, CODE, open_price=10.8, previous_close=10.0, rule_version=RV)
+        second_plan = second_board_auction_matrix(TD, CODE, open_price=10.8, previous_close=10.0, rule_version=RV)
+        assert first_plan.action == ExecutionAction.REDUCE
+        assert second_plan.action == ExecutionAction.HOLD
+
+    def test_5_to_8pct_is_reduce_half(self):
+        plan = second_board_auction_matrix(TD, CODE, open_price=10.5, previous_close=10.0, rule_version=RV)
+        assert plan.action == ExecutionAction.REDUCE
+        assert plan.quantity_pct == 0.5
+
+    def test_missing_price_returns_no_trade(self):
+        plan = second_board_auction_matrix(TD, CODE, open_price=None, previous_close=None, rule_version=RV)
         assert plan.action == ExecutionAction.NO_TRADE
         assert plan.precondition == "missing_price"
 

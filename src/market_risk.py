@@ -19,6 +19,14 @@ from typing import Any
 
 from rule_contract import MarketRegime, PositionPolicy, ReasonCode, RuleConfig
 
+_STRATEGY_PREFIXES = {
+    MarketRegime.FROZEN: "frozen",
+    MarketRegime.SUPPRESSED: "suppressed",
+    MarketRegime.ACTIVE: "active",
+    MarketRegime.MAIN_UP: "main_up",
+}
+_STRATEGY_KEYS = ["first_board", "one_to_two", "relay", "reversal", "half_road"]
+
 
 @dataclass(frozen=True)
 class MarketRiskResult:
@@ -38,6 +46,7 @@ class MarketRiskResult:
     f18_low_sample: bool
     one_to_two_multiplier: float
     rule_version: str
+    strategy_coefficients: dict[str, float] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -68,6 +77,22 @@ def _one_to_two_multiplier(regime: MarketRegime, cfg: RuleConfig) -> float:
         MarketRegime.MAIN_UP: float(mr["one_to_two_multiplier_main_up"]),
     }
     return mapping.get(regime, 1.0)
+
+
+def strategy_coefficients(regime: MarketRegime, cfg: RuleConfig) -> dict[str, float]:
+    """返回当前市场环境下的各策略系数(2026-07-01 知识库)。
+
+    返回 {first_board, one_to_two, relay, reversal, half_road}。
+    """
+    prefix = _STRATEGY_PREFIXES.get(regime)
+    if prefix is None:
+        return {k: 1.0 for k in _STRATEGY_KEYS}
+    sc = cfg.raw.get("strategy_coefficients", {})
+    result = {}
+    for key in _STRATEGY_KEYS:
+        toml_key = f"{prefix}_{key}"
+        result[key] = float(sc.get(toml_key, 1.0))
+    return result
 
 
 def _f18_policy(
@@ -126,6 +151,7 @@ def evaluate_market_risk(
     o2n = len(set(prev_one_board_codes or []) & set(today_two_boards_codes or []))
     one_to_two_rate_val = o2n / o2d if o2d > 0 else None
 
+    coeffs = strategy_coefficients(regime, cfg)
     return MarketRiskResult(
         trade_date=trade_date,
         max_consecutive_boards=max_consecutive_boards,
@@ -140,6 +166,7 @@ def evaluate_market_risk(
         f18_risk_budget=f18_budget,
         f18_low_sample=low_sample,
         one_to_two_multiplier=multiplier,
+        strategy_coefficients=coeffs,
         rule_version=cfg.rule_version,
         metadata={
             "prev_trade_date": prev_trade_date,

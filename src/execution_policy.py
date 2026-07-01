@@ -197,7 +197,134 @@ def defensive_sell_plan(
     return plans
 
 
-# --- 14.4 次日七档竞价矩阵 ---
+# --- 二板→三板竞价矩阵(基于25只1进2成功样本) ---
+
+
+def second_board_auction_matrix(
+    trade_date: str,
+    code: str,
+    *,
+    open_price: float | None,
+    previous_close: float | None,
+    rule_version: str,
+) -> ExecutionPlan:
+    """二板→三板竞价矩阵，基于 25 只 1进2 成功样本统计。
+
+    | 隔夜溢价 | 续板率 | 操作 |
+    |---------|-------|------|
+    | >=+8%   | 75%  | 持有格局 |
+    | +5~+8%  | 50%  | 减半仓 |
+    | +3~+5%  | 25%  | 减仓+30秒观察 |
+    | 0~+3%   | 20%  | 30秒翻红持有 |
+    | <0%     | 0%   | 竞价直接出 |
+    """
+    if open_price is None or previous_close is None:
+        return ExecutionPlan(
+            trade_date=trade_date, code=code,
+            action=ExecutionAction.NO_TRADE,
+            trigger_type=None, trigger_price=None,
+            reference_price=None,
+            quantity_pct=None,
+            valid_from=trade_date,
+            valid_until=None,
+            precondition="missing_price",
+            rule_version=rule_version,
+        )
+
+    premium = (open_price / previous_close - 1) * 100
+
+    if premium >= 8.0:
+        return ExecutionPlan(
+            trade_date=trade_date, code=code,
+            action=ExecutionAction.HOLD,
+            trigger_type="second_board_ge_8pct",
+            trigger_price=open_price,
+            reference_price=open_price,
+            quantity_pct=None,
+            valid_from=trade_date,
+            valid_until=f"{trade_date}T09:25:00",
+            precondition="hold_full_position",
+            rule_version=rule_version,
+        )
+    if premium >= 5.0:
+        return ExecutionPlan(
+            trade_date=trade_date, code=code,
+            action=ExecutionAction.REDUCE,
+            trigger_type="second_board_5_to_8pct",
+            trigger_price=open_price,
+            reference_price=open_price,
+            quantity_pct=0.5,
+            valid_from=trade_date,
+            valid_until=f"{trade_date}T09:25:00",
+            precondition="reduce_half_rest_hold",
+            rule_version=rule_version,
+        )
+    if premium >= 3.0:
+        return ExecutionPlan(
+            trade_date=trade_date, code=code,
+            action=ExecutionAction.REDUCE,
+            trigger_type="second_board_3_to_5pct",
+            trigger_price=open_price,
+            reference_price=open_price,
+            quantity_pct=0.5,
+            valid_from=trade_date,
+            valid_until=f"{trade_date}T09:30:00",
+            precondition="reduce_and_watch_30s",
+            rule_version=rule_version,
+        )
+    if premium >= 0.0:
+        return ExecutionPlan(
+            trade_date=trade_date, code=code,
+            action=ExecutionAction.WATCH,
+            trigger_type="second_board_0_to_3pct",
+            trigger_price=open_price,
+            reference_price=open_price,
+            quantity_pct=None,
+            valid_from=trade_date,
+            valid_until=f"{trade_date}T09:30:30",
+            precondition="require_red_within_30s",
+            rule_version=rule_version,
+        )
+    return ExecutionPlan(
+        trade_date=trade_date, code=code,
+        action=ExecutionAction.EXIT,
+        trigger_type="second_board_negative",
+        trigger_price=open_price,
+        reference_price=open_price,
+        quantity_pct=1.0,
+        valid_from=trade_date,
+        valid_until=f"{trade_date}T09:25:00",
+        precondition="exit_at_auction",
+        rule_version=rule_version,
+    )
+
+
+# --- 14.4 次日七档竞价矩阵(首板→次日) ---
+
+
+# --- C04: 条件单完整性校验 ---
+
+_C04_REQUIRED_ACTIONS = {ExecutionAction.CONDITIONAL_BUY, ExecutionAction.REDUCE, ExecutionAction.EXIT}
+_C04_REQUIRED_LABELS = {"买入触发价", "防跳水卖出价", "+4%回落止盈价", "+7%回落止盈价"}
+
+
+def check_c04_completeness(plans: list[ExecutionPlan]) -> list[str]:
+    """校验条件单4项是否全部列出(C04红线)。
+
+    返回缺失项列表,为空则通过。
+    """
+    found: set[str] = set()
+    for p in plans:
+        if p.action == ExecutionAction.CONDITIONAL_BUY and p.trigger_price is not None:
+            found.add("买入触发价")
+        if p.action == ExecutionAction.REDUCE and "defensive_sell" in (p.trigger_type or ""):
+            found.add("防跳水卖出价")
+        if p.action == ExecutionAction.REDUCE and "4pct" in (p.trigger_type or ""):
+            found.add("+4%回落止盈价")
+        if p.action == ExecutionAction.REDUCE and "7pct" in (p.trigger_type or ""):
+            found.add("+7%回落止盈价")
+    missing = sorted(_C04_REQUIRED_LABELS - found)
+    return missing
 
 
 def auction_matrix(

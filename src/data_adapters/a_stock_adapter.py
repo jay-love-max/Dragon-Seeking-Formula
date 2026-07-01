@@ -8,7 +8,7 @@ import pandas as pd
 import requests
 from mootdx.quotes import Quotes
 
-from contracts import FetchResult, validate_limit_up_pool
+from contracts import FetchResult, validate_index_recap, validate_limit_up_pool
 
 from .base_adapter import (
     BaseStockAdapter,
@@ -129,6 +129,16 @@ class AStockDataAdapter(BaseStockAdapter):
             )
 
         payload = pd.DataFrame(rows)
+        valid, err = validate_index_recap(payload)
+        if not valid:
+            return FetchResult.invalid(
+                dataset_name="index_recap",
+                provider="mootdx",
+                requested_trade_date=date_str,
+                payload=payload,
+                error_message=err or "schema validation failed",
+                schema_version=INDEX_RECAP_SCHEMA_VERSION,
+            )
         return FetchResult.ok(
             dataset_name="index_recap",
             provider="mootdx",

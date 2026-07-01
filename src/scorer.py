@@ -2,7 +2,51 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+
+def detect_fanbao(record: dict[str, Any], recent_boards: list[dict[str, Any]]) -> bool:
+    """F05: 检测反包首板 — 近5个交易日存在涨停后次日收阴的回撤记录。
+
+    record: 当前首板候选
+    recent_boards: 近N日该股的涨停历史(含日期、封板状态)
+    返回 True 当且仅当前板后出现收阴/未继续连板。
+    """
+    if not recent_boards:
+        return False
+    current_date = str(record.get("trade_date", ""))
+    boards_after_current = [b for b in recent_boards if str(b.get("trade_date", "")) > current_date]
+    if boards_after_current:
+        return False
+    for b in recent_boards:
+        b_date = str(b.get("trade_date", ""))
+        if b_date >= current_date:
+            continue
+        b_next_continue = bool(b.get("continued_next_day", False))
+        if not b_next_continue:
+            return True
+    return False
+
+
+def detect_limit_rule(code: str, name: str) -> int:
+    """返回涨停幅度限制(百分比):10/20/30/5。
+
+    适用:
+    - 主板普通:10%
+    - 创业板 300/301、科创板 688/689:20%
+    - 北交所 4/8:30%
+    - ST:5%
+    """
+    code_str = str(code).strip().zfill(6)
+    name_str = str(name or "").strip()
+    if re.match(r"^(30[01]|688|689)", code_str):
+        return 20
+    if re.match(r"^[48]", code_str):
+        return 30
+    if re.match(r"^\*?ST", name_str):
+        return 5
+    return 10
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -213,6 +257,54 @@ def _noise_caps(
         score = min(score, 70)
 
     return score
+
+
+def adjust_score_with_multipliers(
+    score: int,
+    *,
+    market_regime: str | None = None,
+    limit_rule: int = 10,
+    is_fanbao: bool = False,
+    consecutive_boards: int = 1,
+    feature_flags: dict[str, Any] | None = None,
+    config: dict[str, Any] | None = None,
+) -> int:
+    """F02-F05: 对 base score 施加乘性调整因子。
+
+    返回值 [0, 150], 不会超出原始 score 的契约范围。
+    各因子通过 feature_flags.enforce_multiplicative_factors 整体开关。
+    """
+    ff = feature_flags or {}
+    cfg = config or {}
+    if not ff.get("enforce_multiplicative_factors", False):
+        return score
+
+    multipliers: list[float] = [1.0]
+
+    # F02: 冰点期 20cm 标的 ×0.40
+    if market_regime in ("FROZEN", "UNKNOWN") and limit_rule >= 20:
+        f02_coeff = float(cfg.get("market_regime", {}).get("ice_age_20cm_penalty", 0.40))
+        multipliers.append(f02_coeff)
+
+    # F03: 首板(consecutive_boards==1) ×1.05
+    if consecutive_boards == 1:
+        f03_coeff = float(cfg.get("first_board_boost", 1.05))
+        multipliers.append(f03_coeff)
+
+    # F04: 二板+(consecutive_boards>=2) ×0.85
+    if consecutive_boards >= 2:
+        f04_coeff = float(cfg.get("second_board_penalty", 0.85))
+        multipliers.append(f04_coeff)
+
+    # F05: 反包首板 ×0.60
+    if is_fanbao:
+        f05_coeff = float(cfg.get("fbao_penalty", 0.60))
+        multipliers.append(f05_coeff)
+
+    result = score
+    for m in multipliers:
+        result = round(result * m)
+    return max(0, min(150, result))
 
 
 def compute_relay_score(row: dict, sector_limit_ups: int) -> int:

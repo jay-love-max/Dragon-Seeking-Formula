@@ -1,9 +1,21 @@
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import Any
 
 import pandas as pd
 
 from contracts import FetchResult
+
+LHB_FETCH_AFTER_HOUR = 20
+
+
+def can_fetch_longhubang(now: datetime | None = None) -> bool:
+    """F24: 龙虎榜采集时间约束。东方财富 20:00 后才发布完整席位数据。
+
+    返回 True 当且仅当当前时间 >= 20:00 Asia/Shanghai。
+    """
+    dt = now if now is not None else datetime.now()
+    return dt.hour >= LHB_FETCH_AFTER_HOUR
 
 # Normalize raw akshare 龙虎榜 (dragon-tiger list) Chinese columns to the
 # canonical English contract used downstream. The code column is zfilled to 6.

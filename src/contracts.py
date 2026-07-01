@@ -149,6 +149,17 @@ class FetchResult:
 
 
 if pa is not None:
+    class IndexRecapSchema(pa.DataFrameModel):
+        """指数数据契约(行格式,每行一个指数)。"""
+
+        index: Series[str] = pa.Field(nullable=False)
+        price: Series[float] = pa.Field(gt=0, nullable=True)
+        change_pct: Series[float] = pa.Field(nullable=True)
+
+        class Config:
+            coerce = True
+            strict = False
+
     class LimitUpPoolSchema(pa.DataFrameModel):
         """涨停池契约。金额统一"元"单位;展示转换只发生在持久化兼容层/API 层。"""
 
@@ -231,6 +242,17 @@ def validate_limit_up_pool(df: pd.DataFrame) -> tuple[bool, str | None]:
             ok, msg = _fallback_validate_limit_up_pool(df)
             if not ok:
                 return False, msg
+    except Exception as e:
+        return False, str(e)
+    return True, None
+
+
+def validate_index_recap(df: pd.DataFrame) -> tuple[bool, str | None]:
+    if df is None or df.empty:
+        return False, "index_recap is empty"
+    try:
+        if pa is not None:
+            IndexRecapSchema.validate(df, lazy=True)
     except Exception as e:
         return False, str(e)
     return True, None

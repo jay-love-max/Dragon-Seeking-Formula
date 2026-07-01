@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from candidate_policy import (
     CandidateDecision,
+    compute_weighted_score,
     evaluate_f19,
     input_hash,
     rank_candidates,
@@ -362,6 +363,89 @@ class TestDeterministicRanking:
         decision = evaluate_f19(bad, cfg, recent_limit_ups_by_code=_recent_limit_ups_one(today_code=bad["code"]))
         ranked = rank_candidates([decision], cfg)
         assert ranked[0].publication_status != PublicationStatus.PUBLISHED_TOP5
+
+
+# --- F27 加权排名 ---
+
+
+class TestWeightedRanking:
+    """F27:ranking_mode=weighted 使用 weighted_score 排序而非 score 降序。"""
+
+    def _make_decision(self, cfg, code: str, base_score: int = 100,
+                       personality_score: float | None = 50.0,
+                       seal_funds_yuan: float = 80_000_000,
+                       first_seal_time: str = "09:59:59",
+                       blown_count: int = 0,
+                       sector_limit_up_count: int = 3) -> CandidateDecision:
+        return CandidateDecision(
+            trade_date="2026-06-24",
+            code=code,
+            rule_version=cfg.rule_version,
+            eligible=CandidateEligibility.ELIGIBLE,
+            publication_status=PublicationStatus.OBSERVATION_ONLY,
+            published_rank=None,
+            base_score=base_score,
+            adjusted_score=base_score,
+            pred_prob=0.5,
+            personality_score=personality_score,
+            personality_grade="A",
+            reason_codes=[],
+            signals={
+                "seal_funds_yuan": seal_funds_yuan,
+                "first_seal_time": first_seal_time,
+                "blown_count": blown_count,
+                "sector_limit_up_count": sector_limit_up_count,
+            },
+            input_hash="x",
+        )
+
+    def test_weighted_score_stability_early_seal(self):
+        cfg = load_rule_config()
+        weights = {"bid_stability": 0.40, "personality_grade": 0.25, "sector_heat": 0.20, "seal_funds": 0.15}
+        d_early = self._make_decision(cfg, "300050", first_seal_time="09:59:59", blown_count=0)
+        d_late = self._make_decision(cfg, "300051", first_seal_time="13:00:00", blown_count=3)
+        s_early = compute_weighted_score(d_early, weights)
+        s_late = compute_weighted_score(d_late, weights)
+        assert s_early > s_late  # 早盘 + 0炸板 > 尾盘 + 3炸板
+
+    def test_weighted_score_personality_matters(self):
+        cfg = load_rule_config()
+        weights = {"bid_stability": 0.40, "personality_grade": 0.25, "sector_heat": 0.20, "seal_funds": 0.15}
+        d_high = self._make_decision(cfg, "300050", personality_score=85.0)
+        d_low = self._make_decision(cfg, "300051", personality_score=30.0)
+        s_high = compute_weighted_score(d_high, weights)
+        s_low = compute_weighted_score(d_low, weights)
+        assert s_high > s_low
+
+    def test_weighted_mode_ranks_by_composite(self):
+        cfg = load_rule_config()
+        raw = {
+            **cfg.raw,
+            "feature_flags": {**cfg.raw.get("feature_flags", {}), "ranking_mode": "weighted"},
+            "ranking_weights": {"bid_stability": 0.40, "personality_grade": 0.25, "sector_heat": 0.20, "seal_funds": 0.15},
+        }
+        cfg_w = type(cfg)(raw=raw)
+
+        d_good = self._make_decision(cfg_w, "300050", base_score=100, personality_score=85.0,
+                                     first_seal_time="09:30:00", blown_count=0,
+                                     seal_funds_yuan=200_000_000, sector_limit_up_count=5)
+        d_bad = self._make_decision(cfg_w, "300051", base_score=145, personality_score=30.0,
+                                    first_seal_time="14:55:00", blown_count=5,
+                                    seal_funds_yuan=50_000_001, sector_limit_up_count=0)
+
+        ranked = rank_candidates([d_good, d_bad], cfg_w)
+        # 高维合成分的应在低分前,即使 base_score 更低
+        assert ranked[0].code == "300050"
+        assert ranked[1].code == "300051"
+
+    def test_weighted_scores_stored_in_return_no_signals_mutation(self):
+        """加权排序不修改 decision 对象的 signals。"""
+        cfg = load_rule_config()
+        weights = {"bid_stability": 0.40, "personality_grade": 0.25, "sector_heat": 0.20, "seal_funds": 0.15}
+        d = self._make_decision(cfg, "300050")
+        signals_before = dict(d.signals)
+        _ = compute_weighted_score(d, weights)
+        assert d.signals == signals_before
 
 
 # --- 输入 hash 稳定性 ---

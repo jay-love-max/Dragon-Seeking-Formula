@@ -248,11 +248,66 @@ def input_hash(record: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _sort_key(d: CandidateDecision, *, use_adjusted_score: bool) -> tuple:
-    """排序键:主分数 → pred_prob → 股性分 → 封单 → 首封时间 → code。
+def compute_weighted_score(d: CandidateDecision, weights: dict[str, float]) -> float:
+    """F27 加权排名:竞价稳定×w1 + 股性×w2 + 板块热度×w3 + 封单资金×w4。
 
-    use_adjusted_score=false 时,排序严格使用 base_score,adjusted_score 仅作为 shadow。
+    每个维度归一化到 0-100,再用权重合成最终分。分数越高排名越靠前。
     """
+    s = d.signals
+
+    # 竞价稳定分(0-100):早盘封板 + 低炸板 + 封单充足
+    seal_time_str = str(s.get("first_seal_time", ""))
+    is_early = seal_time_str and seal_time_str < "10:00:00"
+    blown = int(s.get("blown_count", 0))
+    seal_funds = float(s.get("seal_funds_yuan", 0.0))
+
+    stability = 0.0
+    if is_early:
+        stability += 30.0
+    if blown == 0:
+        stability += 40.0
+    elif blown <= 2:
+        stability += 25.0
+    elif blown <= 5:
+        stability += 10.0
+    stability += min(30.0, seal_funds / 5_000_000)  # 封单最高+30
+    stability = min(100.0, stability)
+
+    # 股性分(0-100):直接用已计算的 personality_score
+    pers = d.personality_score if d.personality_score is not None else 50.0
+    pers = max(0.0, min(100.0, pers))
+
+    # 板块热度分(0-100):从 signals 读取板块涨停数
+    sector_count = int(s.get("sector_limit_up_count", 0))
+    sector_heat = min(100.0, sector_count * 10.0)
+
+    # 封单资金分(0-100):归一化,1亿=50分,2亿+=100分
+    seal_norm = min(100.0, seal_funds / 2_000_000)
+
+    weighted = (
+        stability * weights.get("bid_stability", 0.40)
+        + pers * weights.get("personality_grade", 0.25)
+        + sector_heat * weights.get("sector_heat", 0.20)
+        + seal_norm * weights.get("seal_funds", 0.15)
+    )
+    return round(weighted, 1)
+
+
+def _sort_key(d: CandidateDecision, *, use_adjusted_score: bool, ranking_mode: str = "additive", weights: dict[str, float] | None = None) -> tuple:
+    """排序键。
+
+    additive 模式(默认):主分数 → pred_prob → 股性分 → 封单 → 首封时间 → code。
+    weighted 模式(F27):加权合成分 → pred_prob → 封单 → 首封时间 → code。
+
+    use_adjusted_score 仅在 additive 模式生效。
+    """
+    if ranking_mode == "weighted":
+        ws = compute_weighted_score(d, weights or {})
+        pred = d.pred_prob if d.pred_prob is not None else -1.0
+        seal = float(d.signals.get("seal_funds_yuan", 0.0))
+        seal_time = str(d.signals.get("first_seal_time", "")) or "99:99:99"
+        return (-ws, -pred, -seal, seal_time, d.code)
+
     primary_score = d.adjusted_score if use_adjusted_score else d.base_score
     pred = d.pred_prob if d.pred_prob is not None else -1.0
     pers = d.personality_score if d.personality_score is not None else -1.0
@@ -280,6 +335,8 @@ def rank_candidates(
     """
     max_n = int(cfg.max_published_candidates)
     use_adjusted_score = bool(cfg.raw.get("feature_flags", {}).get("use_adjusted_score", False))
+    ranking_mode = str(cfg.raw.get("feature_flags", {}).get("ranking_mode", "additive"))
+    weights = cfg.raw.get("ranking_weights", None) if ranking_mode == "weighted" else None
 
     # 分离:通过硬门槛的参与排序;被过滤的不参与 Top5
     eligible = [d for d in decisions if d.eligible == CandidateEligibility.ELIGIBLE]
@@ -287,7 +344,10 @@ def rank_candidates(
 
     # 稳定排序(同输入同输出):Python sort 稳定,先按 code 再按主键确保确定性
     eligible_sorted = sorted(eligible, key=lambda d: d.code)
-    eligible_sorted = sorted(eligible_sorted, key=lambda d: _sort_key(d, use_adjusted_score=use_adjusted_score))
+    eligible_sorted = sorted(
+        eligible_sorted,
+        key=lambda d: _sort_key(d, use_adjusted_score=use_adjusted_score, ranking_mode=ranking_mode, weights=weights),
+    )
 
     ranked: list[CandidateDecision] = []
     for i, d in enumerate(eligible_sorted):

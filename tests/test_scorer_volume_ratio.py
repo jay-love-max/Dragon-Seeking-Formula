@@ -1,7 +1,14 @@
-"""Tests for volume ratio scoring dimension (E05)."""
+"""Tests for volume ratio scoring dimension (E05) and F02-F05 multipliers."""
 from __future__ import annotations
 
-from scorer import _volume_position_bonus, _volume_ratio_points, compute_relay_score
+from scorer import (
+    _volume_position_bonus,
+    _volume_ratio_points,
+    adjust_score_with_multipliers,
+    compute_relay_score,
+    detect_fanbao,
+    detect_limit_rule,
+)
 
 
 class TestVolumeRatioPoints:
@@ -180,3 +187,137 @@ class TestComputeRelayScoreWithVolume:
         """量比不突破 0-150 边界。"""
         high = compute_relay_score(_base_row(volume_ratio=10.0, price_position=0.1), 6)
         assert 0 <= high <= 150
+
+
+class TestDetectLimitRule:
+    """F02/F04/F05:涨停幅度规则识别。"""
+
+    def test_main_board_10cm(self):
+        assert detect_limit_rule("600000", "浦发银行") == 10
+
+    def test_chinext_20cm(self):
+        assert detect_limit_rule("300001", "特锐德") == 20
+
+    def test_chinext_301_20cm(self):
+        assert detect_limit_rule("301000", "某某") == 20
+
+    def test_star_688_20cm(self):
+        assert detect_limit_rule("688000", "华兴源创") == 20
+
+    def test_bse_30cm(self):
+        assert detect_limit_rule("830000", "某某") == 30
+
+    def test_bse_4_start_30cm(self):
+        assert detect_limit_rule("400000", "某某") == 30
+
+    def test_st_5cm_by_name(self):
+        assert detect_limit_rule("600000", "*ST中安") == 5
+
+    def test_st_5cm_by_name_simple(self):
+        assert detect_limit_rule("600000", "ST华英") == 5
+
+
+class TestDetectFanbao:
+    """F05:反包首板检测。"""
+
+    def test_no_recent_boards_false(self):
+        assert detect_fanbao({"trade_date": "2026-06-24"}, []) is False
+
+    def test_previous_board_not_continued(self):
+        record = {"trade_date": "2026-06-24"}
+        recent = [{"trade_date": "2026-06-18", "continued_next_day": False}]
+        assert detect_fanbao(record, recent) is True
+
+    def test_previous_board_continued(self):
+        record = {"trade_date": "2026-06-24"}
+        recent = [{"trade_date": "2026-06-18", "continued_next_day": True}]
+        assert detect_fanbao(record, recent) is False
+
+    def test_future_board_not_counted(self):
+        record = {"trade_date": "2026-06-24"}
+        recent = [{"trade_date": "2026-06-25", "continued_next_day": False}]
+        assert detect_fanbao(record, recent) is False
+
+    def test_mixed_history_detects_fanbao(self):
+        record = {"trade_date": "2026-06-24"}
+        recent = [
+            {"trade_date": "2026-06-15", "continued_next_day": True},
+            {"trade_date": "2026-06-18", "continued_next_day": False},
+        ]
+        assert detect_fanbao(record, recent) is True
+
+
+class TestAdjustScoreWithMultipliers:
+    """F02-F05 乘性调整因子。"""
+
+    def test_disabled_by_default(self):
+        assert adjust_score_with_multipliers(100) == 100
+
+    def test_disabled_no_feature_flag(self):
+        assert adjust_score_with_multipliers(100, feature_flags={}) == 100
+
+    def test_f02_ice_age_20cm_penalty(self):
+        ff = {"enforce_multiplicative_factors": True}
+        cfg = {"market_regime": {"ice_age_20cm_penalty": 0.40}}
+        result = adjust_score_with_multipliers(100, market_regime="FROZEN", limit_rule=20,
+                                                consecutive_boards=0,
+                                                feature_flags=ff, config=cfg)
+        assert result == 40
+
+    def test_f02_with_f03_first_board_boost_stack(self):
+        ff = {"enforce_multiplicative_factors": True}
+        cfg = {"market_regime": {"ice_age_20cm_penalty": 0.40}}
+        result = adjust_score_with_multipliers(100, market_regime="FROZEN", limit_rule=20,
+                                                consecutive_boards=1,
+                                                feature_flags=ff, config=cfg)
+        assert result == 42  # 100 * 0.40 * 1.05
+
+    def test_f02_no_penalty_for_10cm(self):
+        ff = {"enforce_multiplicative_factors": True}
+        cfg = {"market_regime": {"ice_age_20cm_penalty": 0.40}}
+        result = adjust_score_with_multipliers(100, market_regime="FROZEN", limit_rule=10,
+                                                feature_flags=ff, config=cfg)
+        assert result == 105  # F03 首板 x1.05
+
+    def test_f03_first_board_boost(self):
+        ff = {"enforce_multiplicative_factors": True}
+        result = adjust_score_with_multipliers(100, consecutive_boards=1, feature_flags=ff, config={})
+        assert result == 105  # 100 * 1.05
+
+    def test_f04_second_board_penalty(self):
+        ff = {"enforce_multiplicative_factors": True}
+        result = adjust_score_with_multipliers(100, consecutive_boards=2, feature_flags=ff, config={})
+        assert result == 85  # 100 * 0.85
+
+    def test_f05_fanbao_penalty(self):
+        ff = {"enforce_multiplicative_factors": True}
+        result = adjust_score_with_multipliers(100, is_fanbao=True, consecutive_boards=0,
+                                                feature_flags=ff, config={})
+        assert result == 60  # 100 * 0.60
+
+    def test_all_factors_stacked(self):
+        ff = {"enforce_multiplicative_factors": True}
+        cfg = {"market_regime": {"ice_age_20cm_penalty": 0.40}}
+        result = adjust_score_with_multipliers(100, market_regime="FROZEN", limit_rule=20,
+                                                is_fanbao=True, consecutive_boards=1,
+                                                feature_flags=ff, config=cfg)
+        assert result == 25  # 100 * 0.40 * 1.05 * 0.60 = 25.2 -> 25
+
+    def test_result_clamped_to_150(self):
+        ff = {"enforce_multiplicative_factors": True}
+        result = adjust_score_with_multipliers(150, consecutive_boards=1, feature_flags=ff, config={})
+        assert result == 150  # 157->150
+
+    def test_result_clamped_to_0(self):
+        ff = {"enforce_multiplicative_factors": True}
+        cfg = {"market_regime": {"ice_age_20cm_penalty": 0.40}}
+        result = adjust_score_with_multipliers(10, market_regime="FROZEN", limit_rule=20,
+                                                is_fanbao=True, consecutive_boards=1,
+                                                feature_flags=ff, config=cfg)
+        assert result == 2  # 10 * 0.40 * 1.05 * 0.60 = 2.52 -> 2
+
+    def test_config_override_f03(self):
+        ff = {"enforce_multiplicative_factors": True}
+        cfg = {"first_board_boost": 1.10}
+        result = adjust_score_with_multipliers(100, consecutive_boards=1, feature_flags=ff, config=cfg)
+        assert result == 110

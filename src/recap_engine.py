@@ -902,7 +902,12 @@ def _load_lhb_maps(date_str: str) -> tuple[dict[str, dict[str, Any]], dict[str, 
 
     Both maps are built from the same 30-day window. Network or parse errors
     return empty dicts so the caller never has to handle exceptions.
+    F24: 东方财富20:00后才发布席位数据,20:00前返回空。
     """
+    from data_adapters.base_adapter import can_fetch_longhubang
+    if not can_fetch_longhubang():
+        return {}, {}
+
     stat_map: dict[str, dict[str, Any]] = {}
     detail_map: dict[str, dict[str, Any]] = {}
     try:
@@ -1912,6 +1917,10 @@ def run_recap(date_str, trade_dates, observation_only=False):
                 )
             )
         if bool(cfg.raw.get("feature_flags", {}).get("publish_execution_plan", False)):
+            from execution_policy import check_c04_completeness
+            c04_missing = check_c04_completeness(plans)
+            if c04_missing:
+                print(f"[C04] 条件单缺项: {c04_missing}")
             persist_execution_plans(DB_PATH, plans)
 
         print("Running F28 history backtrack scan...")
