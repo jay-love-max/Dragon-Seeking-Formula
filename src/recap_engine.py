@@ -18,6 +18,8 @@ except Exception:
     OpenAI = None
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from mootdx.quotes import Quotes  # noqa: E402
+
 from candidate_policy import CandidateEligibility, evaluate_f19, rank_candidates  # noqa: E402
 from candidate_store import persist_decisions_and_top5, persist_observation  # noqa: E402
 from data_adapters import get_adapter  # noqa: E402
@@ -64,6 +66,65 @@ from trading_calendar import (
 
 ADAPTER = get_adapter()
 MODEL_VERSION = "rf-v2-expanding-sector"
+
+
+def prefetch_volume_features(codes: list[str], today_date: str) -> dict[str, dict]:
+    """批量预取候选的量比与价格位置。
+
+    网络调用(mootdx Quotes.factory().bars()),必须在 SQLite 写事务之外调用。
+    对每个 code 取近25日日K线,计算:
+      - volume_ratio: 今日成交量 / 前5日平均成交量
+      - price_position: 今日收盘在近20日高低区间的分位
+
+    与 AStockAdapter 现有方法一致,每次现建 Quotes.client(不缓存)。
+
+    Args:
+        codes: 候选证券代码列表(6位字符串)
+        today_date: 今日日期 YYYY-MM-DD(仅用于日志)
+
+    Returns:
+        {code: {"volume_ratio": float|None, "price_position": float|None}}
+        单票失败该 code 值为 None;全部失败返回全 None dict。
+    """
+    result: dict[str, dict] = {}
+    if not codes:
+        return result
+
+    try:
+        client = Quotes.factory(market="std")
+    except Exception:
+        return {code: {"volume_ratio": None, "price_position": None} for code in codes}
+
+    for code in codes:
+        try:
+            df = client.bars(symbol=code, frequency=9, start=0, offset=25)
+            if df is None or len(df) < 6:
+                result[code] = {"volume_ratio": None, "price_position": None}
+                continue
+
+            volumes = df["volume"].tolist()
+            closes = df["close"].tolist()
+            highs = df["high"].tolist()
+            lows = df["low"].tolist()
+
+            today_vol = float(volumes[-1])
+            prev_5d_avg = sum(float(v) for v in volumes[-6:-1]) / 5.0
+            volume_ratio = today_vol / prev_5d_avg if prev_5d_avg > 0 else None
+
+            lookback = min(20, len(volumes))
+            recent_high = max(float(h) for h in highs[-lookback:])
+            recent_low = min(float(lo) for lo in lows[-lookback:])
+            today_close = float(closes[-1])
+            if recent_high > recent_low:
+                price_position = (today_close - recent_low) / (recent_high - recent_low)
+            else:
+                price_position = None
+
+            result[code] = {"volume_ratio": volume_ratio, "price_position": price_position}
+        except Exception:
+            result[code] = {"volume_ratio": None, "price_position": None}
+
+    return result
 
 # Base Paths
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
