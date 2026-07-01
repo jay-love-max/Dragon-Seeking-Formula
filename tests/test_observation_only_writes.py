@@ -100,6 +100,7 @@ def _patch_adapter(stack: ExitStack, df_pool: pd.DataFrame, limit_up_fetch, inde
     )
     stack.enter_context(patch.object(recap_engine.ADAPTER, "get_lhb_statistics", return_value=pd.DataFrame(columns=["code"])))
     stack.enter_context(patch.object(recap_engine.ADAPTER, "get_lhb_details", return_value=pd.DataFrame(columns=["code"])))
+    stack.enter_context(patch.object(recap_engine, "prefetch_volume_features", return_value={}))
 
 
 class TestObservationOnlyWrites(TestCase):

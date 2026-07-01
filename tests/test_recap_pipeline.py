@@ -603,6 +603,9 @@ class TestRecapPipeline(unittest.TestCase):
             stack.enter_context(
                 patch.object(recap_engine.ADAPTER, "get_lhb_details", return_value=pd.DataFrame(columns=["code"]))
             )
+            stack.enter_context(
+                patch.object(recap_engine, "prefetch_volume_features", return_value={})
+            )
 
             ok = recap_engine.run_recap(date_str, trade_dates)
 
@@ -663,6 +666,159 @@ class TestRecapPipeline(unittest.TestCase):
         finally:
             conn.close()
 
+
+    def test_volume_ratio_wiring_increases_relay_score(self):
+        """集成测试:prefetch 返回量比数据时,relay_score 反映 +15 增量(核弹+低位放量)。
+
+        验证 prefetch→scorer 的 key-format 契约(zfill(6) 一致性)端到端打通。
+        """
+        from contextlib import ExitStack
+        from unittest.mock import patch
+
+        import pandas as pd
+
+        from contracts import FetchResult
+        from tests.fixtures.golden_samples import GOLDEN_2026_06_24, first_board_record
+
+        date_str = "2026-06-24"
+        trade_dates = pd.bdate_range(end="2026-06-23", periods=20).strftime("%Y-%m-%d").tolist()
+        trade_dates.append(date_str)
+        recap_engine.init_db()
+
+        recap_row = {
+            "sh_price": 3000.0, "sh_change": 1.2, "sz_price": 9000.0, "sz_change": 2.3,
+            "cy_price": 2100.0, "cy_change": 3.4, "total_turnover": 2.9,
+            "limit_ups": 5, "limit_downs": 2, "promotion_rate": 0.5,
+            "hgt_flow": 1.1e11, "sgt_flow": 3.3e10, "sentiment": "活跃",
+            "sector_ranking": json.dumps([]),
+        }
+        for day_idx, trade_date in enumerate(trade_dates[:-1]):
+            recap_engine.persist_market_recap(recap_engine.DB_PATH, {"date": trade_date, **recap_row})
+            for row_idx in range(6):
+                code = f"{600100 + day_idx * 10 + row_idx:06d}"
+                seed_row = first_board_record(
+                    code, f"训练{code}",
+                    seal_funds_yuan=60_000_000 + row_idx * 2_000_000,
+                    blown_count=row_idx % 3,
+                    first_seal_time=["09:31:00", "09:35:00", "09:40:00", "09:45:00", "09:50:00", "09:55:00"][row_idx],
+                    float_mcap_yuan=8_000_000_000 + row_idx * 100_000_000,
+                    turnover_pct=6.0 + row_idx, change_pct=10.0,
+                    sector="电子" if row_idx % 2 == 0 else "半导体", trade_date=trade_date,
+                )
+                recap_engine.persist_observation(
+                    recap_engine.DB_PATH, seed_row,
+                    label_next_2board=1 if (day_idx + row_idx) % 2 == 0 else 0,
+                )
+
+        df_pool = pd.DataFrame([
+            {**r, "concept": f"题材{i + 1}"}
+            for i, r in enumerate(GOLDEN_2026_06_24)
+        ])
+        # df_pool 缺少 first_board_record 之外的列,补齐与 offline test 一致
+        for col in ["consecutive_boards", "is_st"]:
+            if col not in df_pool.columns:
+                df_pool[col] = 1 if col == "consecutive_boards" else False
+
+        index_payload = pd.DataFrame([
+            {"index": "sh", "price": 3000.0, "change_pct": 1.2, "amount_yuan": 1.1e12},
+            {"index": "sz", "price": 9000.0, "change_pct": 2.3, "amount_yuan": 1.4e12},
+            {"index": "cy", "price": 2100.0, "change_pct": 3.4, "amount_yuan": 0.8e12},
+        ])
+        limit_up_fetch = FetchResult.ok(
+            dataset_name="limit_up_pool", provider="offline",
+            requested_trade_date=date_str, as_of=date_str,
+            payload=df_pool, schema_version=1,
+        )
+        index_fetch = FetchResult.ok(
+            dataset_name="index_recap", provider="offline",
+            requested_trade_date=date_str, as_of=date_str,
+            payload=index_payload, schema_version=1,
+        )
+
+        # 量比数据:给 600584(长电科技)注入核弹+低位放量 → volume_ratio=3.5, price_position=0.2
+        vol_features_with_data = {
+            "600584": {"volume_ratio": 3.5, "price_position": 0.2},
+        }
+
+        def fake_run_real_uzi_audit(conn, date_str, candidates, uzi_path):
+            results = []
+            for c in candidates:
+                results.append({
+                    "code": c["code"], "name": c.get("name", ""),
+                    "average_score": 70, "val_vote": "YES", "mom_vote": "YES",
+                    "risk_level": "LOW", "summary": "测试", "analysis": {},
+                    "report_path": "",
+                })
+            return results
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(recap_engine, "run_real_uzi_audit", side_effect=fake_run_real_uzi_audit))
+            stack.enter_context(patch.object(recap_engine, "fetch_ths_reasons", return_value={}))
+            stack.enter_context(patch.object(recap_engine, "get_index_recap_fetchresult", return_value=index_fetch))
+            stack.enter_context(patch.object(recap_engine.ADAPTER, "get_limit_up_pool", return_value=limit_up_fetch))
+            stack.enter_context(patch.object(recap_engine.ADAPTER, "get_limit_down_pool", return_value=pd.DataFrame()))
+            stack.enter_context(patch.object(recap_engine.ADAPTER, "get_concept_reasons", return_value={r["code"]: r.get("concept", "") for r in df_pool.to_dict("records")}))
+            stack.enter_context(patch.object(recap_engine.ADAPTER, "get_lhb_statistics", return_value=pd.DataFrame(columns=["code"])))
+            stack.enter_context(patch.object(recap_engine.ADAPTER, "get_lhb_details", return_value=pd.DataFrame(columns=["code"])))
+            # 第一次跑:注入量比数据
+            stack.enter_context(patch.object(recap_engine, "prefetch_volume_features", return_value=vol_features_with_data))
+            recap_engine.run_recap(date_str, trade_dates)
+
+        # 读取 600584 的 relay_score(有量比)
+        import sqlite3
+        conn = sqlite3.connect(str(recap_engine.DB_PATH))
+        try:
+            score_with_vol = conn.execute(
+                "SELECT score FROM candidates WHERE date=? AND code=?", (date_str, "600584")
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(score_with_vol, "600584 应在 candidates 中")
+        score_with_vol = score_with_vol[0]
+
+        # 第二次跑:降级(空量比),用不同 date 避免主键冲突
+        date_str_degraded = "2026-06-25"
+        trade_dates_degraded = trade_dates + [date_str_degraded]
+        # 需要历史 market_recap for 2026-06-25
+        recap_engine.persist_market_recap(recap_engine.DB_PATH, {"date": date_str_degraded, **recap_row})
+        limit_up_fetch_2 = FetchResult.ok(
+            dataset_name="limit_up_pool", provider="offline",
+            requested_trade_date=date_str_degraded, as_of=date_str_degraded,
+            payload=df_pool.assign(trade_date=date_str_degraded), schema_version=1,
+        )
+        index_fetch_2 = FetchResult.ok(
+            dataset_name="index_recap", provider="offline",
+            requested_trade_date=date_str_degraded, as_of=date_str_degraded,
+            payload=index_payload, schema_version=1,
+        )
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(recap_engine, "run_real_uzi_audit", side_effect=fake_run_real_uzi_audit))
+            stack.enter_context(patch.object(recap_engine, "fetch_ths_reasons", return_value={}))
+            stack.enter_context(patch.object(recap_engine, "get_index_recap_fetchresult", return_value=index_fetch_2))
+            stack.enter_context(patch.object(recap_engine.ADAPTER, "get_limit_up_pool", return_value=limit_up_fetch_2))
+            stack.enter_context(patch.object(recap_engine.ADAPTER, "get_limit_down_pool", return_value=pd.DataFrame()))
+            stack.enter_context(patch.object(recap_engine.ADAPTER, "get_concept_reasons", return_value={r["code"]: r.get("concept", "") for r in df_pool.to_dict("records")}))
+            stack.enter_context(patch.object(recap_engine.ADAPTER, "get_lhb_statistics", return_value=pd.DataFrame(columns=["code"])))
+            stack.enter_context(patch.object(recap_engine.ADAPTER, "get_lhb_details", return_value=pd.DataFrame(columns=["code"])))
+            # 降级:空 dict
+            stack.enter_context(patch.object(recap_engine, "prefetch_volume_features", return_value={}))
+            recap_engine.run_recap(date_str_degraded, trade_dates_degraded)
+
+        conn = sqlite3.connect(str(recap_engine.DB_PATH))
+        try:
+            score_without_vol = conn.execute(
+                "SELECT score FROM candidates WHERE date=? AND code=?", (date_str_degraded, "600584")
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(score_without_vol, "600584 应在 degraded candidates 中")
+        score_without_vol = score_without_vol[0]
+
+        # 量比核弹+低位放量 = +15(10 基础 + 5 联调)
+        self.assertEqual(
+            score_with_vol - score_without_vol, 15,
+            f"量比应贡献 +15: with_vol={score_with_vol}, without_vol={score_without_vol}"
+        )
 
 
 if __name__ == "__main__":

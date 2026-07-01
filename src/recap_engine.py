@@ -1345,6 +1345,16 @@ def run_recap(date_str, trade_dates, observation_only=False):
 
         from scorer import compute_relay_score, generate_playbook
 
+        # 量比预取(网络调用,位于写事务之外)。失败降级为 None,不阻断。
+        vol_features = {}
+        if not df_1b.empty:
+            try:
+                codes = df_1b["code"].astype(str).str.zfill(6).tolist()
+                vol_features = prefetch_volume_features(codes, date_str)
+            except Exception as e:
+                print(f"[volume_ratio] prefetch failed for {date_str}, degrading to 6-dim: {e}")
+                vol_features = {}
+
         if not df_1b.empty:
             df_1b["relay_score"] = df_1b.apply(
                 lambda r: compute_relay_score(
@@ -1354,6 +1364,8 @@ def run_recap(date_str, trade_dates, observation_only=False):
                         "float_mcap": r["float_mcap_yuan"],
                         "seal_funds": r["seal_funds_yuan"],
                         "turnover": r["turnover_pct"],
+                        "volume_ratio": vol_features.get(str(r["code"]).zfill(6), {}).get("volume_ratio"),
+                        "price_position": vol_features.get(str(r["code"]).zfill(6), {}).get("price_position"),
                     },
                     sector_counts.get(r["sector"], 1),
                 ),
