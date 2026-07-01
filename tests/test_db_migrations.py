@@ -79,13 +79,13 @@ class TestMigrationRunner:
             conn.close()
 
     def test_user_version_incremented(self, migrated_db):
-        assert current_schema_version(migrated_db) == 4
+        assert current_schema_version(migrated_db) == 5
 
     def test_migration_is_idempotent(self, migrated_db):
         # 再次应用应跳过已应用版本
         applied = apply_migrations(migrated_db)
         assert applied == []
-        assert current_schema_version(migrated_db) == 4
+        assert current_schema_version(migrated_db) == 5
 
     def test_integrity_check_passes_after_migration(self, migrated_db):
         assert integrity_check(migrated_db) == "ok"

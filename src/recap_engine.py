@@ -1914,6 +1914,12 @@ def run_recap(date_str, trade_dates, observation_only=False):
         if bool(cfg.raw.get("feature_flags", {}).get("publish_execution_plan", False)):
             persist_execution_plans(DB_PATH, plans)
 
+        print("Running F28 history backtrack scan...")
+        try:
+            _run_f28_backtrack_scan(date_str)
+        except Exception as e:
+            print(f"Error during F28 backtrack scan: {e}")
+
         print("Running UZI Jury Audit...")
         try:
             cands_for_audit = _build_uzi_candidates(df_1b, ranked)
@@ -1998,6 +2004,104 @@ def calculate_calibration_stats(conn):
     except Exception as e:
         print(f"Error calculating calibration stats: {e}")
         return []
+
+def _run_f28_backtrack_scan(date_str: str) -> None:
+    from candidate_store import fetch_failed_candidates_last_n, persist_backtrack_signals
+    from history_backtrack import (
+        BacktrackPattern,
+        detect_severe_reversal,
+        detect_shallow_dip,
+        detect_shrink_doji,
+    )
+    from trading_calendar import previous_trading_day
+
+    trade_date = previous_trading_day(date_str)
+    failed_candidates = fetch_failed_candidates_last_n(
+        DB_PATH, n_trading_days=10, end_date=trade_date.isoformat()
+    )
+    if not failed_candidates:
+        print(f"[f28] no failed candidates found in 10-day window for {date_str}")
+        return
+
+    try:
+        client = Quotes.factory(market="std")
+    except Exception:
+        print("[f28] mootdx unavailable, skipping")
+        return
+
+    signals: list[dict[str, Any]] = []
+    for candidate in failed_candidates:
+        code = candidate["code"]
+        try:
+            df = client.bars(symbol=code, frequency=9, start=0, offset=30)
+            if df is None or len(df) < 8:
+                continue
+            closes = [float(v) for v in df["close"].tolist()]
+            volumes = [float(v) for v in df["volume"].tolist()]
+            opens = [float(v) for v in df["open"].tolist()]
+        except Exception:
+            continue
+
+        candidate_date = candidate["trade_date"]
+        candidate_score = candidate.get("base_score")
+
+        # Pattern A: 缩量企稳
+        hit_a, score_a, evid_a = detect_shrink_doji(closes, volumes, opens)
+        if hit_a and score_a >= 30:
+            signals.append({
+                "trade_date": date_str,
+                "code": code,
+                "name": candidate.get("name", ""),
+                "pattern": str(BacktrackPattern.SHRINK_DOJI),
+                "score": score_a,
+                "evidence": evid_a,
+                "candidate_date": candidate_date,
+                "candidate_score": candidate_score,
+                "current_price": closes[-1] if closes else None,
+                "change_pct": None,
+            })
+
+        # Pattern B: 断魂刀反包
+        hit_b, score_b, evid_b = detect_severe_reversal(closes)
+        if hit_b and score_b >= 40:
+            signals.append({
+                "trade_date": date_str,
+                "code": code,
+                "name": candidate.get("name", ""),
+                "pattern": str(BacktrackPattern.SEVERE_REVERSAL),
+                "score": score_b,
+                "evidence": evid_b,
+                "candidate_date": candidate_date,
+                "candidate_score": candidate_score,
+                "current_price": closes[-1] if closes else None,
+                "change_pct": None,
+            })
+
+        # Pattern C: 趋势股无深调
+        float_mcap = candidate.get("float_mcap_yuan")
+        hit_c, score_c, evid_c = detect_shallow_dip(closes, float_mcap_yuan=float_mcap)
+        if hit_c and score_c >= 50:
+            signals.append({
+                "trade_date": date_str,
+                "code": code,
+                "name": candidate.get("name", ""),
+                "pattern": str(BacktrackPattern.SHALLOW_DIP),
+                "score": score_c,
+                "evidence": evid_c,
+                "candidate_date": candidate_date,
+                "candidate_score": candidate_score,
+                "current_price": closes[-1] if closes else None,
+                "change_pct": None,
+            })
+
+    if signals:
+        persist_backtrack_signals(DB_PATH, signals)
+        print(f"[f28] {len(signals)} backtrack signal(s) persisted for {date_str}")
+        for s in signals:
+            print(f"  🔄 {s['code']} {s['name']} | {s['pattern']} | score={s['score']} | {s['evidence']}")
+    else:
+        print(f"[f28] no backtrack signals for {date_str}")
+
 
 def main():
     import argparse

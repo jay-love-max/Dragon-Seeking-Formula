@@ -298,6 +298,89 @@ def persist_decisions_and_top5(
 # --- ML 训练读取(方案 16.1:从 observations,不是 Top 5) ---
 
 
+# --- F28: 历史候选回溯 ---
+
+
+def fetch_failed_candidates_last_n(
+    db_path: str, *, n_trading_days: int,
+    end_date: str | None = None,
+) -> list[dict[str, Any]]:
+    """取最近 n 个交易日中观察过的首板(含候选日价格、股性等级)。"""
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from trading_calendar import previous_trading_day
+
+    today = _dt.now(UTC).date()
+    cutoff = today
+    for _ in range(n_trading_days + 5):
+        cutoff = previous_trading_day(cutoff)
+    cutoff_str = cutoff.isoformat()
+    end = end_date or today.isoformat()
+
+    conn = connect(db_path, read_only=True)
+    try:
+        rows = conn.execute(
+            """
+            SELECT o.trade_date, o.code, o.name,
+                   o.price_yuan, o.change_pct, o.turnover_pct,
+                   o.float_mcap_yuan, o.seal_funds_yuan,
+                   o.first_seal_time, o.blown_count, o.consecutive_boards,
+                   o.is_st, o.sector, o.concept, o.label_next_2board,
+                   d.base_score, d.adjusted_score, d.personality_grade,
+                   d.publication_status, d.published_rank, d.reason_codes_json,
+                   d.signals_json
+              FROM candidate_observations o
+              LEFT JOIN candidate_decisions d
+                ON d.trade_date = o.trade_date AND d.code = o.code
+             WHERE o.trade_date >= ? AND o.trade_date <= ?
+               AND (o.label_next_2board IS NULL OR o.label_next_2board = 0)
+             ORDER BY o.trade_date DESC, o.code ASC
+            """,
+            (cutoff_str, end),
+        )
+        cols = [desc[0] for desc in rows.description]
+        return [dict(zip(cols, row)) for row in rows]
+    finally:
+        conn.close()
+
+
+def persist_backtrack_signals(
+    db_path: str,
+    signals: list[dict[str, Any]],
+) -> None:
+    if not signals:
+        return
+    from db import connect
+
+    now = datetime.now(UTC).isoformat()
+    conn = connect(db_path)
+    try:
+        for s in signals:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO backtrack_signals
+                    (trade_date, code, name, pattern, score, evidence,
+                     candidate_date, candidate_score, current_price,
+                     change_pct, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    s["trade_date"], s["code"], s.get("name"),
+                    s["pattern"], s["score"], s["evidence"],
+                    s["candidate_date"], s.get("candidate_score"),
+                    s.get("current_price"), s.get("change_pct"),
+                    now,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# --- ML 训练读取(方案 16.1:从 observations,不是 Top 5) ---
+
+
 def fetch_observations_for_training(db_path: str, *, end_date: str) -> pd.DataFrame:
     """读取 end_date(含)之前的全部首板观察,供 ML 训练。
 

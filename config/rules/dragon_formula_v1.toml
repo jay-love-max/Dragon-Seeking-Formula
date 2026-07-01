@@ -112,6 +112,15 @@ require_rule_config_valid = true
 require_migration_ok = true
 require_no_default_zero = true
 
+[ranking_weights]
+# F27: 候选排名时各维度的隐式权重(知识库 2026-06-30)
+# 竞价稳定性(封板时间+炸板) > 股性等级 > 板块热度 > 封单资金
+# 当前评分模型用加分制,非显式权重;此处记录设计目标供回测验证
+bid_stability = 0.40       # 首封时间 + 封板稳定性
+personality_grade = 0.25   # 股性 S/A/B+/B-/C/D
+sector_heat = 0.20         # 板块涨停数
+seal_funds = 0.15          # 封单资金(已归一化)
+
 [volume_ratio]
 # E05 量比维度:今日成交量 / 前 volume_ma_window 日平均成交量
 nuke_threshold = 3.0          # ≥3 核弹级
